@@ -15,9 +15,6 @@ use \OCP\IConfig;
 use OCA\Richdocuments\AppInfo\Application;
 
 class AppConfig {
-	public const WOPI_URL = 'wopi_url';
-	public const PUBLIC_WOPI_URL = 'public_wopi_url';
-
 	public const FEDERATION_USE_TRUSTED_DOMAINS = 'federation_use_trusted_domains';
 
 	public const SYSTEM_GS_TRUSTED_HOSTS = 'gs.trustedHosts';
@@ -127,14 +124,6 @@ class AppConfig {
 	 */
 	public function isTrustedDomainAllowedForFederation(): bool {
 		return $this->config->getAppValue(Application::APPNAME, self::FEDERATION_USE_TRUSTED_DOMAINS, 'no') === 'yes';
-	}
-
-	public function getCollaboraUrlPublic(): string {
-		return $this->config->getAppValue(Application::APPNAME, self::PUBLIC_WOPI_URL, $this->getCollaboraUrlInternal());
-	}
-
-	public function getCollaboraUrlInternal(): string {
-		return $this->config->getAppValue(Application::APPNAME, self::WOPI_URL, '');
 	}
 
 	public function getDisableCertificateValidation(): bool {

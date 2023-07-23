@@ -4,27 +4,27 @@ namespace OCA\Richdocuments\Service;
 
 use Exception;
 use OCA\Richdocuments\AppConfig;
+use OCA\Richdocuments\WOPI\UrlMagic as WopiUrlMagic;
 use OCP\Files\File;
 use OCP\Files\NotFoundException;
 use OCP\Http\Client\IClientService;
 use Psr\Log\LoggerInterface;
 
 class RemoteService {
-
 	public const REMOTE_TIMEOUT_DEFAULT = 25;
 
 	public function __construct(
 		private AppConfig $appConfig,
 		private IClientService $clientService,
+		private WopiUrlMagic $wopiUrlMagic,
 		private LoggerInterface $logger,
-	) {
-	}
+	) {}
 
 	public function fetchTargets($file): array {
 		$client = $this->clientService->newClient();
 		try {
 			$response = $client->put(
-				$this->appConfig->getCollaboraUrlInternal(). '/cool/extract-link-targets',
+				$this->wopiUrlMagic->internal() . '/cool/extract-link-targets',
 				$this->getRequestOptionsForFile($file)
 			);
 		} catch (Exception $e) {
@@ -46,7 +46,7 @@ class RemoteService {
 	public function fetchTargetThumbnail(File $file, string $target): ?string {
 		$client = $this->clientService->newClient();
 		try {
-			$response = $client->put($this->appConfig->getCollaboraUrlInternal(). '/cool/get-thumbnail', $this->getRequestOptionsForFile($file, $target));
+			$response = $client->put($this->wopiUrlMagic->internal() . '/cool/get-thumbnail', $this->getRequestOptionsForFile($file, $target));
 			return (string)$response->getBody();
 		} catch (Exception $e) {
 			$this->logger->info('Failed to fetch target thumbnail', ['exception' => $e]);

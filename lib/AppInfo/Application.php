@@ -43,6 +43,7 @@ use OCA\Richdocuments\Preview\Pdf;
 use OCA\Richdocuments\Reference\OfficeTargetReferenceProvider;
 use OCA\Richdocuments\Service\CapabilitiesService;
 use OCA\Richdocuments\Template\CollaboraTemplateProvider;
+use OCA\Richdocuments\WOPI\UrlMagic as WOPIUrlMagic;
 use OCA\Richdocuments\WOPI\DiscoveryManager;
 use OCA\Viewer\Event\LoadViewer;
 use OCP\AppFramework\App;
@@ -171,44 +172,24 @@ class Application extends App implements IBootstrap {
 	}
 
 	public function checkAndEnableCODEServer() {
-		// Supported only on Linux OS, and x86_64 & ARM64 platforms
-		$supportedArchs = array('x86_64', 'aarch64');
-		$osFamily = PHP_VERSION_ID >= 70200 ? PHP_OS_FAMILY : PHP_OS;
-		if ($osFamily !== 'Linux' || !in_array(php_uname('m'), $supportedArchs)) {
-			return;
-		}
+		$container = $this->getContainer();
 
-		$CODEAppID = (php_uname('m') === 'x86_64') ? 'richdocumentscode' : 'richdocumentscode_arm64';
+		$wopi_url_magic = $container->get(WOPIUrlMagic::class);
+		if (! $wopi_url_magic->is_code_proxy()) return;
 
-		if ($this->getContainer()->getServer()->getAppManager()->isEnabledForUser($CODEAppID)) {
-			$appConfig = $this->getContainer()->query(AppConfig::class);
-			$wopi_url = $appConfig->getAppValue('wopi_url');
-			$isCODEEnabled = strpos($wopi_url, 'proxy.php?req=') !== false;
+		$wopi_url = $wopi_url_magic->internal();
+		$app_config = $container->get(AppConfig::class);
+		if ($app_config->getAppValue('wopi_url') !== $wopi_url) $app_config->setAppValue('wopi_url', $wopi_url);
 
-			// Check if we have the wopi_url set to custom currently
-			if ($wopi_url !== null && $wopi_url !== '' && $isCODEEnabled === false) {
-				return;
-			}
+		if ('yes' !== $app_config->getAppValue('disable_certificate_verification')) $app_config->setAppValue(
+			'disable_certificate_verification', 'yes'
+		);
 
-			$urlGenerator = \OC::$server->getURLGenerator();
-			$relativeUrl = $urlGenerator->linkTo($CODEAppID, '') . 'proxy.php';
-			$absoluteUrl = $urlGenerator->getAbsoluteURL($relativeUrl);
-			$new_wopi_url = $absoluteUrl . '?req=';
+		$discovery_manager = $container->get(DiscoveryManager::class);
+		$capabilities_service = $container->get(CapabilitiesService::class);
 
-			// Check if the wopi url needs to be updated
-			if ($isCODEEnabled && $wopi_url === $new_wopi_url) {
-				return;
-			}
-
-			$appConfig->setAppValue('wopi_url', $new_wopi_url);
-			$appConfig->setAppValue('disable_certificate_verification', 'yes');
-
-			$discoveryManager = $this->getContainer()->query(DiscoveryManager::class);
-			$capabilitiesService = $this->getContainer()->query(CapabilitiesService::class);
-
-			$discoveryManager->refetch();
-			$capabilitiesService->clear();
-			$capabilitiesService->refetch();
-		}
+		$discovery_manager->refetch();
+		$capabilities_service->clear();
+		$capabilities_service->refetch();
 	}
 }

@@ -24,7 +24,7 @@
 namespace OCA\Richdocuments\Service;
 
 use OCA\Richdocuments\AppInfo\Application;
-use OCP\App\IAppManager;
+use OCA\Richdocuments\WOPI\UrlMagic as WopiUrlMagic;
 use OCP\Http\Client\IClientService;
 use OCP\ICache;
 use OCP\ICacheFactory;
@@ -39,8 +39,8 @@ class CapabilitiesService {
 	private $clientService;
 	/** @var ICache */
 	private $cache;
-	/** @var IAppManager */
-	private $appManager;
+	/** @var WopiUrlMagic */
+	private WopiUrlMagic $wopiUrlMagic;
 	/** @var IL10N */
 	private $l10n;
 	/** @var LoggerInterface */
@@ -50,33 +50,33 @@ class CapabilitiesService {
 	private $capabilities;
 
 
-	public function __construct(IConfig $config, IClientService $clientService, ICacheFactory $cacheFactory, IAppManager $appManager, IL10N $l10n, LoggerInterface $logger) {
+	public function __construct(
+		IConfig $config,
+		IClientService $clientService,
+		ICacheFactory $cacheFactory,
+		WopiUrlMagic $wopiUrlMagic,
+		IL10N $l10n,
+		LoggerInterface $logger
+	) {
 		$this->config = $config;
 		$this->clientService = $clientService;
 		$this->cache = $cacheFactory->createDistributed('richdocuments');
-		$this->appManager = $appManager;
+		$this->wopiUrlMagic = $wopiUrlMagic;
 		$this->l10n = $l10n;
 		$this->logger = $logger;
 	}
 
 	public function getCapabilities() {
-		if (!$this->capabilities) {
+		if (! $this->capabilities) {
 			$this->capabilities = $this->cache->get('capabilities');
 		}
 
-		$isARM64 = php_uname('m') === 'aarch64';
-		$CODEAppID = $isARM64 ? 'richdocumentscode_arm64' : 'richdocumentscode';
-		$isCODEInstalled = $this->appManager->isEnabledForUser($CODEAppID);
-		$isCODEEnabled = strpos($this->config->getAppValue('richdocuments', 'wopi_url'), 'proxy.php?req=') !== false;
-		$shouldRecheckCODECapabilities = $isCODEInstalled && $isCODEEnabled && ($this->capabilities === null || count($this->capabilities) === 0);
-		if ($this->capabilities === null || $shouldRecheckCODECapabilities) {
-			$this->refetch();
-		}
+		$refetch_condition = ! is_array($this->capabilities);
+		$refetch_condition = $refetch_condition || empty($refetch_condition);
+		$refetch_condition = $refetch_condition || $this->wopiUrlMagic->is_code_proxy();
 
-		if (!is_array($this->capabilities)) {
-			return [];
-		}
-
+		if ($refetch_condition) $this->refetch();
+		if (! is_array($this->capabilities)) return [];
 		return $this->capabilities;
 	}
 
@@ -105,8 +105,8 @@ class CapabilitiesService {
 	public function getProductName(): string {
 		$theme = $this->config->getAppValue(Application::APPNAME, 'theme', 'nextcloud');
 
-		if (isset($this->capabilitites['productName']) && $theme !== 'nextcloud') {
-			return $this->capabilitites['productName'];
+		if (isset($this->capabilities['productName']) && $theme !== 'nextcloud') {
+			return $this->capabilities['productName'];
 		}
 
 		return $this->l10n->t('Nextcloud Office');
@@ -117,10 +117,9 @@ class CapabilitiesService {
 	}
 
 	public function refetch(): void {
-		$remoteHost = $this->config->getAppValue('richdocuments', 'wopi_url');
-		if ($remoteHost === '') {
-			return;
-		}
+		$remoteHost = $this->wopiUrlMagic->internal();
+		if ((! is_string($remoteHost)) || ('' === $remoteHost)) return;
+
 		$capabilitiesEndpoint = rtrim($remoteHost, '/') . '/hosting/capabilities';
 
 		$client = $this->clientService->newClient();

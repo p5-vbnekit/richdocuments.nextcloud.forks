@@ -23,10 +23,11 @@ namespace OCA\Richdocuments\Preview;
 
 use OC\Preview\Provider;
 use OCA\Richdocuments\Capabilities;
+use OCA\Richdocuments\WOPI\UrlMagic as WopiUrlMagic;
 use OCP\Http\Client\IClientService;
 use OCP\IConfig;
-use OCP\ILogger;
 use OCP\Image;
+use Psr\Log\LoggerInterface;
 
 abstract class Office extends Provider {
 	/** @var IClientService */
@@ -38,19 +39,29 @@ abstract class Office extends Provider {
 	/** @var array */
 	private $capabilitites;
 
-	/** @var ILogger */
-	private $logger;
+	/** @var WopiUrlMagic */
+	private WopiUrlMagic $wopiUrlMagic;
 
-	public function __construct(IClientService $clientService, IConfig $config, Capabilities $capabilities, ILogger $logger) {
+	/** @var LoggerInterface */
+	private LoggerInterface $logger;
+
+	public function __construct(
+		IClientService $clientService,
+		IConfig $config,
+		Capabilities $capabilities,
+		WopiUrlMagic $wopiUrlMagic,
+		LoggerInterface $logger
+	) {
 		parent::__construct();
 		$this->clientService = $clientService;
 		$this->config = $config;
 		$this->capabilitites = $capabilities->getCapabilities()['richdocuments'] ?? [];
+		$this->wopiUrlMagic = $wopiUrlMagic;
 		$this->logger = $logger;
 	}
 
 	private function getWopiURL() {
-		return $this->config->getAppValue('richdocuments', 'wopi_url');
+		return $this->wopiUrlMagic->internal();
 	}
 
 	public function isAvailable(\OCP\Files\FileInfo $file) {
@@ -86,14 +97,12 @@ abstract class Office extends Provider {
 
 		$options['multipart'] = [['name' => $path, 'contents' => $stream]];
 
+		if ($this->wopiUrlMagic->is_code_proxy()) $options['nextcloud'] = array('allow_local_address' => true);
+
 		try {
 			$response = $client->post($this->getWopiURL(). '/lool/convert-to/png', $options);
 		} catch (\Exception $e) {
-			$this->logger->logException($e, [
-				'message' => 'Failed to convert file to preview',
-				'level' => ILogger::INFO,
-				'app' => 'richdocuments',
-			]);
+			$this->logger->info('Failed to convert file to preview', ['exception' => $e]);
 			return false;
 		}
 

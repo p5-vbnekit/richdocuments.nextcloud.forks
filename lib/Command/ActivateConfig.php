@@ -64,13 +64,7 @@ class ActivateConfig extends Command {
 		try {
 			$this->discoveryManager->refetch();
 			$this->capabilitiesService->clear();
-			$capaUrlSrc = $this->wopiParser->getUrlSrc('Capabilities');
-			if (is_array($capaUrlSrc) && $capaUrlSrc['action'] === 'getinfo') {
-				$public_wopi_url = str_replace('/hosting/capabilities', '', $capaUrlSrc['urlsrc']);
-				if ($public_wopi_url !== null) {
-					$this->appConfig->setAppValue('public_wopi_url', $public_wopi_url);
-				}
-			}
+			$this->wopiParser->getUrlSrc('Capabilities');
 			$this->capabilitiesService->clear();
 			$this->capabilitiesService->refetch();
 			$output->writeln('<info>Activated any config changes</info>');

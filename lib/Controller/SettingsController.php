@@ -130,7 +130,6 @@ class SettingsController extends Controller {
 		return new JSONResponse([
 			'wopi_url' => $this->appConfig->getAppValue('wopi_url'),
 			'wopi_allowlist' => $this->appConfig->getAppValue('wopi_allowlist'),
-			'public_wopi_url' => $this->appConfig->getAppValue('public_wopi_url'),
 			'disable_certificate_verification' => $this->appConfig->getAppValue('disable_certificate_verification') === 'yes',
 			'edit_groups' => $this->appConfig->getAppValue('edit_groups'),
 			'use_groups' => $this->appConfig->getAppValue('use_groups'),
@@ -200,7 +199,6 @@ class SettingsController extends Controller {
 			if (is_array($capaUrlSrc) && $capaUrlSrc['action'] === 'getinfo') {
 				$public_wopi_url = str_replace('/hosting/capabilities', '', $capaUrlSrc['urlsrc']);
 				if ($public_wopi_url !== null) {
-					$this->appConfig->setAppValue('public_wopi_url', $public_wopi_url);
 					$colon = strpos($public_wopi_url, ':', 0);
 					if ($this->request->getServerProtocol() !== substr($public_wopi_url, 0, $colon)) {
 						$message = $this->l10n->t('Saved with error: Collabora Online should expose the same protocol as the server installation. Please check the ssl.enable and ssl.termination settings of your Collabora Online server.');
