@@ -9,8 +9,6 @@ use OCP\Collaboration\Reference\RenderReferenceEvent;
 use OCP\EventDispatcher\IEventDispatcher;
 
 trait DocumentTrait {
-	private $appConfig;
-
 	private function documentTemplateResponse(Wopi $wopi, array $params): TemplateResponse {
 		$eventDispatcher = \OC::$server->get(IEventDispatcher::class);
 		$eventDispatcher->dispatchTyped(new RenderReferenceEvent());
@@ -24,7 +22,7 @@ trait DocumentTrait {
 	 * Setup policy headers for the response
 	 */
 	private function applyPolicies($response) {
-		$collaboraHost = $this->domainOnly($this->appConfig->getCollaboraUrlPublic());
+		$collaboraHost = $this->domainOnly($this->wopiUrlMagic->external());
 
 		$featurePolicy = new FeaturePolicy();
 		$featurePolicy->addAllowedFullScreenDomain($collaboraHost);

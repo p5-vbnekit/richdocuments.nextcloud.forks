@@ -35,6 +35,7 @@ class DiscoveryManager {
 	private IClientService $clientService;
 	private ICache $cache;
 	private IConfig $config;
+	private UrlMagic $urlMagic;
 	private LoggerInterface $logger;
 
 	private ?string $discovery = null;
@@ -43,21 +44,21 @@ class DiscoveryManager {
 		IClientService $clientService,
 		ICacheFactory $cacheFactory,
 		IConfig $config,
+		UrlMagic $urlMagic,
 		LoggerInterface $logger
 	) {
 		$this->clientService = $clientService;
 		$this->cache = $cacheFactory->createDistributed('richdocuments');
 		$this->config = $config;
+		$this->urlMagic = $urlMagic;
 		$this->logger = $logger;
 	}
 
 	public function get(): ?string {
-		if ($this->discovery) {
-			return $this->discovery;
-		}
+		if ($this->discovery) return $this->discovery;
 
 		$this->discovery = $this->cache->get('discovery');
-		if (!$this->discovery) {
+		if (! $this->discovery) {
 			$response = $this->fetchFromRemote();
 			$responseBody = $response->getBody();
 			$this->discovery = $responseBody;
@@ -71,19 +72,16 @@ class DiscoveryManager {
 	 * @throws \Exception if a network error occurs
 	 */
 	public function fetchFromRemote(): IResponse {
-		$remoteHost = $this->config->getAppValue('richdocuments', 'wopi_url');
-		$wopiDiscovery = rtrim($remoteHost, '/') . '/hosting/discovery';
+		$wopiDiscovery = rtrim($this->urlMagic->internal(), '/') . '/hosting/discovery';
 
 		$client = $this->clientService->newClient();
 		$options = ['timeout' => 45, 'nextcloud' => ['allow_local_address' => true]];
 
-		if ($this->config->getAppValue('richdocuments', 'disable_certificate_verification') === 'yes') {
-			$options['verify'] = false;
-		}
+		if ('yes' === $this->config->getAppValue(
+			'richdocuments', 'disable_certificate_verification'
+		)) $options['verify'] = false;
 
-		if ($this->isProxyStarting($wopiDiscovery)) {
-			$options['timeout'] = 180;
-		}
+		if ($this->isProxyStarting()) $options['timeout'] = 180;
 
 		$startTime = microtime(true);
 		$response = $client->get($wopiDiscovery, $options);
@@ -101,41 +99,29 @@ class DiscoveryManager {
 	/**
 	 * @return boolean indicating if proxy.php is in initialize or false otherwise
 	 */
-	private function isProxyStarting(string $url): bool {
-		$usesProxy = false;
-		$proxyPos = strrpos($url, 'proxy.php');
-		if ($proxyPos === false) {
-			$usesProxy = false;
-		} else {
-			$usesProxy = true;
-		}
+	private function isProxyStarting(): bool {
+		$proxyUrl = $this->urlMagic->code_proxy();
 
-		if ($usesProxy === true) {
-			$statusUrl = substr($url, 0, $proxyPos);
-			$statusUrl = $statusUrl . 'proxy.php?status';
+		if ('' !== $proxyUrl) {
+			$statusUrl = $proxyUrl . '?status';
 
 			$client = $this->clientService->newClient();
 			$options = ['timeout' => 5, 'nextcloud' => ['allow_local_address' => true]];
 
-			if ($this->config->getAppValue('richdocuments', 'disable_certificate_verification') === 'yes') {
-				$options['verify'] = false;
-			}
+			if ('yes' === $this->config->getAppValue(
+				'richdocuments', 'disable_certificate_verification'
+			)) $options['verify'] = false;
 
 			try {
 				$response = $client->get($statusUrl, $options);
-
-				if ($response->getStatusCode() === 200) {
+				if (200 === $response->getStatusCode()) {
 					$body = json_decode($response->getBody(), true);
-
 					if ($body['status'] === 'starting'
-						|| $body['status'] === 'stopped'
-						|| $body['status'] === 'restarting') {
-						return true;
-					}
+					|| $body['status'] === 'stopped'
+					|| $body['status'] === 'restarting'
+					) return true;
 				}
-			} catch (\Exception $e) {
-				// ignore
-			}
+			} catch (\Exception) {}
 		}
 
 		return false;

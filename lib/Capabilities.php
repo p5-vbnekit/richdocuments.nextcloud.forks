@@ -26,7 +26,6 @@ namespace OCA\Richdocuments;
 use OCA\Richdocuments\Service\CapabilitiesService;
 use OCP\App\IAppManager;
 use OCP\Capabilities\ICapability;
-use OCP\IL10N;
 use OCP\IURLGenerator;
 
 class Capabilities implements ICapability {
@@ -76,24 +75,32 @@ class Capabilities implements ICapability {
 		'text/spreadsheet'
 	];
 
-	private IL10N $l10n;
 	private AppConfig $config;
 	private CapabilitiesService $capabilitiesService;
 	private PermissionManager $permissionManager;
 	private IURLGenerator $urlGenerator;
 	private IAppManager $appManager;
+	private WOPI\UrlMagic $wopiUrlMagic;
 	private ?string $userId = null;
 
 	private $capabilities = null;
 
-	public function __construct(IL10N $l10n, AppConfig $config, CapabilitiesService $capabilitiesService, PermissionManager $permissionManager, IAppManager $appManager, ?string $userId, IURLGenerator $urlGenerator) {
-		$this->l10n = $l10n;
+	public function __construct(
+		AppConfig $config,
+		CapabilitiesService $capabilitiesService,
+		PermissionManager $permissionManager,
+		IURLGenerator $urlGenerator,
+		IAppManager $appManager,
+		WOPI\UrlMagic $wopiUrlMagic,
+		?string $userId
+	) {
 		$this->config = $config;
 		$this->capabilitiesService = $capabilitiesService;
 		$this->permissionManager = $permissionManager;
-		$this->appManager = $appManager;
-		$this->userId = $userId;
 		$this->urlGenerator = $urlGenerator;
+		$this->appManager = $appManager;
+		$this->wopiUrlMagic = $wopiUrlMagic;
+		$this->userId = $userId;
 	}
 
 	public function getCapabilities() {
@@ -130,16 +137,14 @@ class Capabilities implements ICapability {
 					'productName' => $this->capabilitiesService->getProductName(),
 					'editonline_endpoint' => $this->urlGenerator->linkToRouteAbsolute('richdocuments.document.editOnline'),
 					'config' => [
-						'wopi_url' => $this->config->getAppValue('wopi_url'),
-						'public_wopi_url' => $this->config->getAppValue('public_wopi_url'),
+						'wopi_url' => $this->wopiUrlMagic->external(),
 						'disable_certificate_verification' => $this->config->getAppValue('disable_certificate_verification'),
 						'edit_groups' => $this->config->getAppValue('edit_groups'),
 						'use_groups' => $this->config->getAppValue('use_groups'),
 						'doc_format' => $this->config->getAppValue('doc_format'),
-						'timeout' => $this->config->getAppValue('timeout'),
-
+						'timeout' => $this->config->getAppValue('timeout')
 					]
-				],
+				]
 			];
 		}
 		return $this->capabilities;

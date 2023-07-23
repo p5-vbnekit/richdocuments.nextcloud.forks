@@ -26,6 +26,7 @@ namespace OCA\Richdocuments\Listener;
 
 use OCA\Richdocuments\AppConfig;
 use OCA\Richdocuments\Service\FederationService;
+use OCA\Richdocuments\WOPI\UrlMagic as WopiUrlMagic;
 use OCP\App\IAppManager;
 use OCP\AppFramework\Http\EmptyContentSecurityPolicy;
 use OCP\EventDispatcher\Event;
@@ -41,13 +42,22 @@ class CSPListener implements IEventListener {
 	private IAppManager $appManager;
 	private FederationService $federationService;
 	private GlobalScaleConfig $globalScaleConfig;
+	private WopiUrlMagic $wopiUrlMagic;
 
-	public function __construct(IRequest $request, AppConfig $config, IAppManager $appManager, FederationService $federationService, GlobalScaleConfig $globalScaleConfig) {
+	public function __construct(
+		IRequest $request,
+		AppConfig $config,
+		IAppManager $appManager,
+		FederationService $federationService,
+		GlobalScaleConfig $globalScaleConfig,
+		WopiUrlMagic $wopiUrlMagic
+	) {
 		$this->request = $request;
 		$this->config = $config;
 		$this->appManager = $appManager;
 		$this->federationService = $federationService;
 		$this->globalScaleConfig = $globalScaleConfig;
+		$this->wopiUrlMagic = $wopiUrlMagic;
 	}
 
 	public function handle(Event $event): void {
@@ -60,7 +70,7 @@ class CSPListener implements IEventListener {
 		}
 
 		$urls = array_merge(
-			[ $this->domainOnly($this->config->getCollaboraUrlPublic()) ],
+			[ $this->domainOnly($this->wopiUrlMagic->external()) ],
 			$this->getFederationDomains(),
 			$this->getGSDomains()
 		);

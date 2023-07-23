@@ -17,6 +17,7 @@ use \OCP\AppFramework\Http\TemplateResponse;
 use \OCP\IConfig;
 use \OCP\IRequest;
 use OC\User\NoUserException;
+use OCA\Richdocuments\WOPI\UrlMagic as WopiUrlMagic;
 use OCA\Richdocuments\Service\FederationService;
 use OCA\Richdocuments\Service\InitialStateService;
 use OCA\Richdocuments\TemplateManager;
@@ -63,7 +64,10 @@ class DocumentController extends Controller {
 	private $federationService;
 	/** @var InitialStateService */
 	private $initialState;
+	/** @var IURLGenerator */
 	private IURLGenerator $urlGenerator;
+	/** @var WopiUrlMagic */
+	private WopiUrlMagic $wopiUrlMagic;
 
 	public function __construct(
 		$appName,
@@ -79,7 +83,8 @@ class DocumentController extends Controller {
 		TemplateManager $templateManager,
 		FederationService $federationService,
 		InitialStateService $initialState,
-		IURLGenerator $urlGenerator
+		IURLGenerator $urlGenerator,
+		WopiUrlMagic $wopiUrlMagic
 	) {
 		parent::__construct($appName, $request);
 		$this->uid = $UserId;
@@ -94,6 +99,7 @@ class DocumentController extends Controller {
 		$this->federationService = $federationService;
 		$this->initialState = $initialState;
 		$this->urlGenerator = $urlGenerator;
+		$this->wopiUrlMagic = $wopiUrlMagic;
 	}
 
 	/**

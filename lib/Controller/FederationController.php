@@ -23,6 +23,7 @@
 namespace OCA\Richdocuments\Controller;
 
 use OCA\Richdocuments\Db\WopiMapper;
+use OCA\Richdocuments\WOPI\UrlMagic as WopiUrlMagic;
 use OCA\Richdocuments\Exceptions\ExpiredTokenException;
 use OCA\Richdocuments\Exceptions\UnknownTokenException;
 use OCP\AppFramework\Db\DoesNotExistException;
@@ -51,6 +52,9 @@ class FederationController extends OCSController {
 	/** @var IURLGenerator */
 	private $urlGenerator;
 
+	/** @var WopiUrlMagic */
+	private $wopiUrlMagic;
+
 	public function __construct(
 		string $appName,
 		IRequest $request,
@@ -58,7 +62,8 @@ class FederationController extends OCSController {
 		LoggerInterface $logger,
 		WopiMapper $wopiMapper,
 		IUserManager $userManager,
-		IURLGenerator $urlGenerator
+		IURLGenerator $urlGenerator,
+		WopiUrlMagic $wopiUrlMagic
 	) {
 		parent::__construct($appName, $request);
 		$this->config = $config;
@@ -66,6 +71,7 @@ class FederationController extends OCSController {
 		$this->wopiMapper = $wopiMapper;
 		$this->userManager = $userManager;
 		$this->urlGenerator = $urlGenerator;
+		$this->wopiUrlMagic = $wopiUrlMagic;
 	}
 
 	/**
@@ -75,7 +81,7 @@ class FederationController extends OCSController {
 	 */
 	public function index(): DataResponse {
 		$response = new DataResponse([
-			'wopi_url' => $this->config->getAppValue('richdocuments', 'wopi_url')
+			'wopi_url' => $this->wopiUrlMagic->external()
 		]);
 		$response->setHeaders(['X-Frame-Options' => 'ALLOW']);
 		return $response;
