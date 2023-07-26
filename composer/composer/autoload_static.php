@@ -7,17 +7,17 @@ namespace Composer\Autoload;
 class ComposerStaticInitRichdocuments
 {
     public static $prefixLengthsPsr4 = array (
-        'O' => 
+        'O' =>
         array (
-            'OCA\\Richdocuments\\' => 18,
-        ),
+            'OCA\\Richdocuments\\' => 18
+        )
     );
 
     public static $prefixDirsPsr4 = array (
-        'OCA\\Richdocuments\\' => 
+        'OCA\\Richdocuments\\' =>
         array (
-            0 => __DIR__ . '/..' . '/../lib',
-        ),
+            0 => __DIR__ . '/..' . '/../lib'
+        )
     );
 
     public static $classMap = array (
@@ -30,7 +30,12 @@ class ComposerStaticInitRichdocuments
         'OCA\\Richdocuments\\Command\\ActivateConfig' => __DIR__ . '/..' . '/../lib/Command/ActivateConfig.php',
         'OCA\\Richdocuments\\Command\\ConvertToBigInt' => __DIR__ . '/..' . '/../lib/Command/ConvertToBigInt.php',
         'OCA\\Richdocuments\\Command\\UpdateEmptyTemplates' => __DIR__ . '/..' . '/../lib/Command/UpdateEmptyTemplates.php',
+        'OCA\\Richdocuments\\Config\\Application' => __DIR__ . '/..' . '/../lib/Config/Application.php',
+        'OCA\\Richdocuments\\Config\\Collector' => __DIR__ . '/..' . '/../lib/Config/Collector.php',
+        'OCA\\Richdocuments\\Config\\System' => __DIR__ . '/..' . '/../lib/Config/System.php',
+        'OCA\\Richdocuments\\Config\\User' => __DIR__ . '/..' . '/../lib/Config/User.php',
         'OCA\\Richdocuments\\Controller\\AssetsController' => __DIR__ . '/..' . '/../lib/Controller/AssetsController.php',
+        'OCA\\Richdocuments\\Controller\\CodeController' => __DIR__ . '/..' . '/../lib/Controller/CodeController.php',
         'OCA\\Richdocuments\\Controller\\DirectViewController' => __DIR__ . '/..' . '/../lib/Controller/DirectViewController.php',
         'OCA\\Richdocuments\\Controller\\DocumentAPIController' => __DIR__ . '/..' . '/../lib/Controller/DocumentAPIController.php',
         'OCA\\Richdocuments\\Controller\\DocumentController' => __DIR__ . '/..' . '/../lib/Controller/DocumentController.php',
@@ -75,6 +80,7 @@ class ComposerStaticInitRichdocuments
         'OCA\\Richdocuments\\Reference\\OfficeTargetReferenceProvider' => __DIR__ . '/..' . '/../lib/Reference/OfficeTargetReferenceProvider.php',
         'OCA\\Richdocuments\\Service\\CapabilitiesService' => __DIR__ . '/..' . '/../lib/Service/CapabilitiesService.php',
         'OCA\\Richdocuments\\Service\\DemoService' => __DIR__ . '/..' . '/../lib/Service/DemoService.php',
+        'OCA\\Richdocuments\\Service\\CodeService' => __DIR__ . '/..' . '/../lib/Service/CodeService.php',
         'OCA\\Richdocuments\\Service\\FederationService' => __DIR__ . '/..' . '/../lib/Service/FederationService.php',
         'OCA\\Richdocuments\\Service\\FileTargetService' => __DIR__ . '/..' . '/../lib/Service/FileTargetService.php',
         'OCA\\Richdocuments\\Service\\FontService' => __DIR__ . '/..' . '/../lib/Service/FontService.php',
@@ -88,8 +94,14 @@ class ComposerStaticInitRichdocuments
         'OCA\\Richdocuments\\Template\\CollaboraTemplateProvider' => __DIR__ . '/..' . '/../lib/Template/CollaboraTemplateProvider.php',
         'OCA\\Richdocuments\\TokenManager' => __DIR__ . '/..' . '/../lib/TokenManager.php',
         'OCA\\Richdocuments\\UploadException' => __DIR__ . '/..' . '/../lib/UploadException.php',
+        'OCA\\Richdocuments\\Utils\\ByPassResponse' => __DIR__ . '/..' . '/../lib/Utils/ByPassResponse.php',
+        'OCA\\Richdocuments\\Utils\\CodeApplicationInfo' => __DIR__ . '/..' . '/../lib/Utils/CodeApplicationInfo.php',
+        'OCA\\Richdocuments\\Utils\\CodeDaemonLauncher' => __DIR__ . '/..' . '/../lib/Utils/CodeDaemonLauncher.php',
+        'OCA\\Richdocuments\\Utils\\Common' => __DIR__ . '/..' . '/../lib/Utils/Common.php',
+        'OCA\\Richdocuments\\Utils\\RequestInfo' => __DIR__ . '/..' . '/../lib/Utils/RequestInfo.php',
         'OCA\\Richdocuments\\WOPI\\DiscoveryManager' => __DIR__ . '/..' . '/../lib/WOPI/DiscoveryManager.php',
-        'OCA\\Richdocuments\\WOPI\\Parser' => __DIR__ . '/..' . '/../lib/WOPI/Parser.php',
+        'OCA\\Richdocuments\\WOPI\\EndpointResolver' => __DIR__ . '/..' . '/../lib/WOPI/EndpointResolver.php',
+        'OCA\\Richdocuments\\WOPI\\Parser' => __DIR__ . '/..' . '/../lib/WOPI/Parser.php'
     );
 
     public static function getInitializer(ClassLoader $loader)
@@ -98,7 +110,6 @@ class ComposerStaticInitRichdocuments
             $loader->prefixLengthsPsr4 = ComposerStaticInitRichdocuments::$prefixLengthsPsr4;
             $loader->prefixDirsPsr4 = ComposerStaticInitRichdocuments::$prefixDirsPsr4;
             $loader->classMap = ComposerStaticInitRichdocuments::$classMap;
-
         }, null, ClassLoader::class);
     }
 }
