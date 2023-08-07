@@ -19,91 +19,79 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>
  *
  */
+
+declare(strict_types = 1);
+
 namespace OCA\Richdocuments\Preview;
 
-use OC\Preview\Provider;
-use OCA\Richdocuments\Capabilities;
-use OCP\Http\Client\IClientService;
-use OCP\IConfig;
-use OCP\ILogger;
-use OCP\Image;
+use \OCP\Files\FileInfo;
+use \OCA\Richdocuments\Utils;
 
-abstract class Office extends Provider {
-	/** @var IClientService */
-	private $clientService;
+abstract class Office extends \OC\Preview\Provider {
+    public function __construct(
+        private readonly string $appName,
+        private readonly \OCP\Http\Client\IClientService $clientService,
+        private readonly \OCA\Richdocuments\Capabilities $capabilities,
+        private readonly \OCA\Richdocuments\WOPI\EndpointResolver $endpointResolver,
+        private readonly \OCA\Richdocuments\Config\Application $config,
+        private readonly \Psr\Log\LoggerInterface $logger
+    ) {
+        parent::__construct();
+    }
 
-	/** @var IConfig */
-	private $config;
+    private function getWopiURL() {
+        $_url = $this->endpointResolver->internal();
+        \OCA\Richdocuments\Utils\Common::assert(\is_string($_url));
+        return $_url;
+    }
 
-	/** @var array */
-	private $capabilitites;
+    public function isAvailable(FileInfo $file) {
+        return true === Utils\Common::get_from_tree(
+            $this->capabilities->getCapabilities(),
+            [$this->appName, 'collabora', 'convert-to', 'available'],
+            ['gentle' => true, 'default' => false]
+        );
+    }
 
-	/** @var ILogger */
-	private $logger;
+    /**
+     * {@inheritDoc}
+     */
+    public function getThumbnail($path, $maxX, $maxY, $scalingup, $fileview) {
+        $fileInfo = $fileview->getFileInfo($path);
+        if (! ($fileInfo instanceof FileInfo)) return false;
+        if (0 === $fileInfo->getSize()) return false;
 
-	public function __construct(IClientService $clientService, IConfig $config, Capabilities $capabilities, ILogger $logger) {
-		parent::__construct();
-		$this->clientService = $clientService;
-		$this->config = $config;
-		$this->capabilitites = $capabilities->getCapabilities()['richdocuments'] ?? [];
-		$this->logger = $logger;
-	}
+        if ($fileInfo->isEncrypted() || (! $fileInfo->getStorage()->isLocal())) {
+            $fileName = $fileview->toTmpFile($path);
+            $stream = \fopen($fileName, 'r');
+        }
 
-	private function getWopiURL() {
-		return $this->config->getAppValue('richdocuments', 'wopi_url');
-	}
+        else $stream = $fileview->fopen($path, 'r');
 
-	public function isAvailable(\OCP\Files\FileInfo $file) {
-		if (isset($this->capabilitites['collabora']['convert-to']['available'])) {
-			return (bool)$this->capabilitites['collabora']['convert-to']['available'];
-		}
-		return false;
-	}
+        $client = $this->clientService->newClient();
+        $options = ['timeout' => 25, 'multipart' => [
+            ['name' => $path, 'contents' => $stream]
+        ]];
 
-	/**
-	 * {@inheritDoc}
-	 */
-	public function getThumbnail($path, $maxX, $maxY, $scalingup, $fileview) {
-		$fileInfo = $fileview->getFileInfo($path);
-		if (!$fileInfo || $fileInfo->getSize() === 0) {
-			return false;
-		}
+        if ($this->config->get('disable_certificate_verification')) $options['verify'] = false;
 
-		$useTempFile = $fileInfo->isEncrypted() || !$fileInfo->getStorage()->isLocal();
-		if ($useTempFile) {
-			$fileName = $fileview->toTmpFile($path);
-			$stream = fopen($fileName, 'r');
-		} else {
-			$stream = $fileview->fopen($path, 'r');
-		}
+        try { $response = $client->post($this->getWopiURL(). '/lool/convert-to/png', $options); }
+        catch (\Throwable $e) {
+            $this->logger->info(
+                'Failed to convert file to preview',
+                ['exception' => $e]
+            );
+            return false;
+        }
 
-		$client = $this->clientService->newClient();
-		$options = ['timeout' => 25];
+        $image = new \OCP\Image();
+        $image->loadFromData($response->getBody());
 
-		if ($this->config->getAppValue('richdocuments', 'disable_certificate_verification') === 'yes') {
-			$options['verify'] = false;
-		}
+        if ($image->valid()) {
+            $image->scaleDownToFit($maxX, $maxY);
+            return $image;
+        }
 
-		$options['multipart'] = [['name' => $path, 'contents' => $stream]];
-
-		try {
-			$response = $client->post($this->getWopiURL(). '/lool/convert-to/png', $options);
-		} catch (\Exception $e) {
-			$this->logger->logException($e, [
-				'message' => 'Failed to convert file to preview',
-				'level' => ILogger::INFO,
-				'app' => 'richdocuments',
-			]);
-			return false;
-		}
-
-		$image = new Image();
-		$image->loadFromData($response->getBody());
-
-		if ($image->valid()) {
-			$image->scaleDownToFit($maxX, $maxY);
-			return $image;
-		}
-		return false;
-	}
+        return false;
+    }
 }

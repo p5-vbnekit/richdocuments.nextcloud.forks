@@ -20,226 +20,186 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+
+declare(strict_types = 1);
+
 namespace OCA\Richdocuments\Controller;
 
-use OCA\Richdocuments\AppConfig;
-use OCA\Richdocuments\Db\Direct;
-use OCA\Richdocuments\Db\DirectMapper;
-use OCA\Richdocuments\Service\FederationService;
-use OCA\Richdocuments\Service\InitialStateService;
-use OCA\Richdocuments\TemplateManager;
-use OCA\Richdocuments\TokenManager;
-use OCP\AppFramework\Controller;
-use OCP\AppFramework\Db\DoesNotExistException;
-use OCP\AppFramework\Http;
-use OCP\AppFramework\Http\JSONResponse;
-use OCP\AppFramework\Http\RedirectResponse;
-use OCP\AppFramework\Http\TemplateResponse;
-use OCP\Files\Folder;
-use OCP\Files\IRootFolder;
-use OCP\Files\Node;
-use OCP\Files\NotFoundException;
-use OCP\IConfig;
-use OCP\ILogger;
-use OCP\IRequest;
+use \OCP\Files;
+use \OCP\AppFramework\Http;
+use \OCA\Richdocuments\Utils;
 
-class DirectViewController extends Controller {
-	use DocumentTrait;
+class DirectViewController extends \OCP\AppFramework\Controller {
+    use DocumentTrait;
 
-	/** @var IRootFolder */
-	private $rootFolder;
+    public function __construct(
+        string $appName,
+        \OCP\IRequest $request,
+        private readonly \OCP\Share\IManager $shareManager,
+        private readonly \OCP\Files\IRootFolder $rootFolder,
+        private readonly \OCP\EventDispatcher\IEventDispatcher $eventDispatcher,
+        private readonly \OCA\Richdocuments\TokenManager $tokenManager,
+        private readonly \OCA\Richdocuments\TemplateManager $templateManager,
+        private readonly \OCA\Richdocuments\Db\DirectMapper $directMapper,
+        private readonly \OCA\Richdocuments\WOPI\EndpointResolver $endpointResolver,
+        private readonly \OCA\Richdocuments\Config\Collector $config,
+        private readonly \OCA\Richdocuments\Service\FederationService $federationService,
+        private readonly \OCA\Richdocuments\Service\InitialStateService $initialStateService,
+        private readonly \Psr\Log\LoggerInterface $logger
+    ) {
+        parent::__construct($appName, $request);
+    }
 
-	/** @var TokenManager */
-	private $tokenManager;
+    /**
+     * @NoAdminRequired
+     * @NoCSRFRequired
+     * @PublicPage
+     *
+     * @param string $token
+     * @return Http\JSONResponse|Http\RedirectResponse|Http\TemplateResponse
+     * @throws Files\NotFoundException
+     */
+    public function show($token) {
+        try { $direct = $this->directMapper->getByToken($token); }
+        catch (\OCP\AppFramework\Db\DoesNotExistException $e) {
+            unset($e);
+            $response = $this->renderErrorPage('Failed to open the requested file.');
+            $response->setStatus(Http::STATUS_FORBIDDEN);
+            return $response;
+        }
 
-	/** @var DirectMapper */
-	private $directMapper;
+        // Delete the token. They are for 1 time use only
+        $this->directMapper->delete($direct);
 
-	/** @var IConfig */
-	private $config;
+        // Direct token for share link
+        if (! empty($direct->getShare())) return $this->showPublicShare($direct);
 
-	/** @var AppConfig */
-	private $appConfig;
+        $folder = $this->rootFolder->getUserFolder($direct->getUid());
+        if ($this->templateManager->isTemplate($direct->getFileid())) {
+            $item = $this->templateManager->get($direct->getFileid());
+            $templateDestination = $direct->getTemplateDestination();
 
-	/** @var TemplateManager */
-	private $templateManager;
+            if (\in_array(
+                $templateDestination, [0, null], true
+            )) return new Http\JSONResponse([], Http::STATUS_BAD_REQUEST);
 
-	/** @var FederationService */
-	private $federationService;
+            try {
+                list($urlSrc, $wopi) = $this->tokenManager->getTokenForTemplate(
+                    $item, $direct->getUid(), $templateDestination, true
+                );
+                $targetFile = $folder->getById($templateDestination)[0];
+                $relativePath = $folder->getRelativePath($targetFile->getPath());
+            } catch (\Throwable $e) {
+                $this->logger->error(
+                    'Failed to generate token for new file on direct editing',
+                    ['exception' => $e]
+                );
+                return new Http\JSONResponse([], Http::STATUS_BAD_REQUEST);
+            }
+        } else {
+            try {
+                $item = $folder->getById($direct->getFileid())[0];
+                Utils\Common::assert($item instanceof Files\Node);
 
-	/** @var ILogger */
-	private $logger;
+                /** Open file from remote collabora */
+                $federatedUrl = $this->federationService->getRemoteRedirectURL($item, $direct);
+                if (! \is_null($federatedUrl)) {
+                    $response = new Http\RedirectResponse($federatedUrl);
+                    $response->addHeader('X-Frame-Options', 'ALLOW');
+                    return $response;
+                }
 
-	/** @var InitialStateService */
-	private $initialState;
+                list($urlSrc, $token, $wopi) = $this->tokenManager->getToken(
+                    $item->getId(), null, $direct->getUid(), true
+                );
+            } catch (\Throwable $e) {
+                $this->logger->error(
+                    'Failed to generate token for existing file on direct editing',
+                    ['exception' => $e]
+                );
+                return $this->renderErrorPage('Failed to open the requested file.');
+            }
 
-	public function __construct(
-		$appName,
-		IRequest $request,
-		IRootFolder $rootFolder,
-		TokenManager $tokenManager,
-		DirectMapper $directMapper,
-		InitialStateService $initialState,
-		IConfig $config,
-		AppConfig $appConfig,
-		TemplateManager $templateManager,
-		FederationService $federationService,
-		ILogger $logger
-	) {
-		parent::__construct($appName, $request);
+            $relativePath = $folder->getRelativePath($item->getPath());
+        }
 
-		$this->rootFolder = $rootFolder;
-		$this->tokenManager = $tokenManager;
-		$this->directMapper = $directMapper;
-		$this->initialState = $initialState;
-		$this->config = $config;
-		$this->appConfig = $appConfig;
-		$this->templateManager = $templateManager;
-		$this->federationService = $federationService;
-		$this->logger = $logger;
-	}
+        try { return $this->documentTemplateResponse($wopi, [
+                'permissions' => $item->getPermissions(),
+                'title' => basename($relativePath),
+                'fileId' => \implode('_', [
+                    $wopi->getFileid(), $this->config->system->get('instanceid')
+                ]),
+                'token' => $wopi->getToken(),
+                'token_ttl' => $wopi->getExpiry(),
+                'urlsrc' => $urlSrc,
+                'path' => $relativePath,
+                'direct' => true,
+        ]); } catch (\Throwable $e) { $this->logger->error(
+            'Failed to open the requested file',
+            ['exception' => $e]
+        ); }
 
-	/**
-	 * @NoAdminRequired
-	 * @NoCSRFRequired
-	 * @PublicPage
-	 *
-	 * @param string $token
-	 * @return JSONResponse|RedirectResponse|TemplateResponse
-	 * @throws NotFoundException
-	 */
-	public function show($token) {
-		try {
-			$direct = $this->directMapper->getByToken($token);
-		} catch (DoesNotExistException $e) {
-			$response = $this->renderErrorPage('Failed to open the requested file.');
-			$response->setStatus(Http::STATUS_FORBIDDEN);
-			return $response;
-		}
+        return  $this->renderErrorPage('Failed to open the requested file.');
+    }
 
-		// Delete the token. They are for 1 time use only
-		$this->directMapper->delete($direct);
+    public function showPublicShare(
+        \OCA\Richdocuments\Db\Direct $direct
+    ) {
+        try {
+            $share = $this->shareManager->getShareByToken($direct->getShare());
 
-		// Direct token for share link
-		if (!empty($direct->getShare())) {
-			return $this->showPublicShare($direct);
-		}
+            $node = $share->getNode();
+            if ($node instanceof Files\Folder) {
+                $node = \array_shift($node->getById($direct->getFileid()));
+                if (\is_null($node)) throw new Files\NotFoundException();
+            }
 
+            // Handle opening a share link that originates from a remote instance
+            $federatedUrl = $this->federationService->getRemoteRedirectURL($node, $direct, $share);
+            if (! \is_null($federatedUrl)) {
+                $response = new Http\RedirectResponse($federatedUrl);
+                $response->addHeader('X-Frame-Options', 'ALLOW');
+                return $response;
+            }
 
-		$folder = $this->rootFolder->getUserFolder($direct->getUid());
-		if ($this->templateManager->isTemplate($direct->getFileid())) {
-			$item = $this->templateManager->get($direct->getFileid());
-			if ($direct->getTemplateDestination() === 0 || $direct->getTemplateDestination() === null) {
-				return new JSONResponse([], Http::STATUS_BAD_REQUEST);
-			}
+            if ($node instanceof Files\Node) {
+                $params = [
+                    'permissions' => $share->getPermissions(),
+                    'title' => $node->getName(),
+                    'fileId' => \implode('_', [
+                        $node->getId(), $this->config->system->get('instanceid')
+                    ]),
+                    'path' => '/',
+                    'userId' => null,
+                    'direct' => true,
+                    'directGuest' => empty($direct->getUid()),
+                ];
 
-			try {
-				list($urlSrc, $wopi) = $this->tokenManager->getTokenForTemplate($item, $direct->getUid(), $direct->getTemplateDestination(), true);
+                list($urlSrc, $token, $wopi) = $this->tokenManager->getToken(
+                    $node->getId(), $direct->getShare(), $direct->getUid(), true
+                );
 
-				$targetFile = $folder->getById($direct->getTemplateDestination())[0];
-				$relativePath = $folder->getRelativePath($targetFile->getPath());
-			} catch (\Exception $e) {
-				$this->logger->error('Failed to generate token for new file on direct editing', ['exception' => $e]);
-				return new JSONResponse([], Http::STATUS_BAD_REQUEST);
-			}
-		} else {
-			try {
-				$item = $folder->getById($direct->getFileid())[0];
-				if (!($item instanceof Node)) {
-					throw new \Exception();
-				}
+                if (! empty($direct->getInitiatorHost())) $this->tokenManager->upgradeFromDirectInitiator(
+                    $direct, $wopi
+                );
 
-				/** Open file from remote collabora */
-				$federatedUrl = $this->federationService->getRemoteRedirectURL($item, $direct);
-				if ($federatedUrl !== null) {
-					$response = new RedirectResponse($federatedUrl);
-					$response->addHeader('X-Frame-Options', 'ALLOW');
-					return $response;
-				}
+                $params['token'] = $token;
+                $params['token_ttl'] = $wopi->getExpiry();
+                $params['urlsrc'] = $urlSrc;
 
-				list($urlSrc, $token, $wopi) = $this->tokenManager->getToken($item->getId(), null, $direct->getUid(), true);
-			} catch (\Exception $e) {
-				$this->logger->error('Failed to generate token for existing file on direct editing', ['exception' => $e]);
-				return $this->renderErrorPage('Failed to open the requested file.');
-			}
+                return $this->documentTemplateResponse($wopi, $params);
+            }
+        }
 
-			$relativePath = $folder->getRelativePath($item->getPath());
-		}
+        catch (\Throwable $e) {
+            $this->logger->error('Failed to open the requested file', ['exception' => $e]);
+            return $this->renderErrorPage('Failed to open the requested file.');
+        }
 
-		try {
-			$params = [
-				'permissions' => $item->getPermissions(),
-				'title' => basename($relativePath),
-				'fileId' => $wopi->getFileid() . '_' . $this->config->getSystemValue('instanceid'),
-				'token' => $wopi->getToken(),
-				'token_ttl' => $wopi->getExpiry(),
-				'urlsrc' => $urlSrc,
-				'path' => $relativePath,
-				'direct' => true,
-			];
+        return new Http\TemplateResponse('core', '403', [], 'guest');
+    }
 
-			return $this->documentTemplateResponse($wopi, $params);
-		} catch (\Exception $e) {
-			$this->logger->logException($e);
-			return  $this->renderErrorPage('Failed to open the requested file.');
-		}
-	}
-
-	public function showPublicShare(Direct $direct) {
-		try {
-			$share = \OC::$server->getShareManager()->getShareByToken($direct->getShare());
-
-			$node = $share->getNode();
-			if ($node instanceof Folder) {
-				$nodes = $node->getById($direct->getFileid());
-				$node = array_shift($nodes);
-				if ($node === null) {
-					throw new NotFoundException();
-				}
-			}
-
-			// Handle opening a share link that originates from a remote instance
-			$federatedUrl = $this->federationService->getRemoteRedirectURL($node, $direct, $share);
-			if ($federatedUrl !== null) {
-				$response = new RedirectResponse($federatedUrl);
-				$response->addHeader('X-Frame-Options', 'ALLOW');
-				return $response;
-			}
-
-			$this->settings = \OC::$server->getConfig();
-			if ($node instanceof Node) {
-				$params = [
-					'permissions' => $share->getPermissions(),
-					'title' => $node->getName(),
-					'fileId' => $node->getId() . '_' . $this->settings->getSystemValue('instanceid'),
-					'path' => '/',
-					'userId' => null,
-					'direct' => true,
-					'directGuest' => empty($direct->getUid()),
-				];
-
-				list($urlSrc, $token, $wopi) = $this->tokenManager->getToken($node->getId(), $direct->getShare(), $direct->getUid(), true);
-				if (!empty($direct->getInitiatorHost())) {
-					$this->tokenManager->upgradeFromDirectInitiator($direct, $wopi);
-				}
-				$params['token'] = $token;
-				$params['token_ttl'] = $wopi->getExpiry();
-				$params['urlsrc'] = $urlSrc;
-
-				return $this->documentTemplateResponse($wopi, $params);
-			}
-		} catch (\Exception $e) {
-			$this->logger->logException($e, ['app' => 'richdocuments']);
-			return $this->renderErrorPage('Failed to open the requested file.');
-		}
-
-		return new TemplateResponse('core', '403', [], 'guest');
-	}
-
-	private function renderErrorPage($message) {
-		$params = [
-			'errors' => [['error' => $message]]
-		];
-		return new TemplateResponse('core', 'error', $params, 'guest');
-	}
+    private function renderErrorPage($message) { return new Http\TemplateResponse(
+        'core', 'error', ['errors' => [['error' => $message]]], 'guest'
+    ); }
 }

@@ -19,43 +19,38 @@
  *
  */
 
+declare(strict_types = 1);
+
 namespace OCA\Richdocuments\WOPI;
 
 class Parser {
-	/** @var DiscoveryManager */
-	private $discoveryManager;
+    private DiscoveryManager $_discoveryManager;
 
-	/**
-	 * @param DiscoveryManager $discoveryManager
-	 */
-	public function __construct(DiscoveryManager $discoveryManager) {
-		$this->discoveryManager = $discoveryManager;
-	}
+    public function __construct(DiscoveryManager $discoveryManager) {
+        $this->_discoveryManager = $discoveryManager;
+    }
 
-	/**
-	 * @param $mimetype
-	 * @return array
-	 * @throws \Exception
-	 */
-	public function getUrlSrc($mimetype) {
-		$discovery = $this->discoveryManager->get();
-		if (\PHP_VERSION_ID < 80000) {
-			$loadEntities = libxml_disable_entity_loader(true);
-			$discoveryParsed = simplexml_load_string($discovery);
-			libxml_disable_entity_loader($loadEntities);
-		} else {
-			$discoveryParsed = simplexml_load_string($discovery);
-		}
+    public function getUrlSrc($mime): array {
+        $_discovery = (function () {
+            $_value = $this->_discoveryManager->get();
 
+            if (80000 > \PHP_VERSION_ID) {
+                $_load_entities = \libxml_disable_entity_loader(true);
+                $_value = \simplexml_load_string($_value);
+                \libxml_disable_entity_loader($_load_entities);
+                return $_value;
+            }
 
-		$result = $discoveryParsed->xpath(sprintf('/wopi-discovery/net-zone/app[@name=\'%s\']/action', $mimetype));
-		if ($result && count($result) > 0) {
-			return [
-				'urlsrc' => (string)$result[0]['urlsrc'],
-				'action' => (string)$result[0]['name'],
-			];
-		}
+            return \simplexml_load_string($_value);
+        }) ()->xpath(sprintf(
+            '/wopi-discovery/net-zone/app[@name=\'%s\']/action', $mime
+        ));
 
-		throw new \Exception('Could not find urlsrc in WOPI');
-	}
+        if ($_discovery && (0 < count($_discovery))) return [
+            'urlsrc' => (string)$_discovery[0]['urlsrc'],
+            'action' => (string)$_discovery[0]['name']
+        ];
+
+        throw new \Exception('Could not find urlsrc in WOPI');
+    }
 }

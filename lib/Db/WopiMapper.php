@@ -20,174 +20,148 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+
+declare(strict_types = 1);
+
 namespace OCA\Richdocuments\Db;
 
-use OCA\Richdocuments\AppConfig;
-use OCA\Richdocuments\Exceptions\ExpiredTokenException;
-use OCA\Richdocuments\Exceptions\UnknownTokenException;
-use OCP\AppFramework\Db\QBMapper;
-use OCP\AppFramework\Utility\ITimeFactory;
-use OCP\DB\QueryBuilder\IQueryBuilder;
-use OCP\IDBConnection;
-use OCP\ILogger;
-use OCP\Security\ISecureRandom;
+use \OCP\Security\ISecureRandom;
+use \OCA\Richdocuments\Exceptions\ExpiredTokenException;
+use \OCA\Richdocuments\Exceptions\UnknownTokenException;
 
-/** @template-extends QBMapper<Wopi> */
-class WopiMapper extends QBMapper {
-	/** @var ISecureRandom */
-	private $random;
+/** @template-extends \OCP\AppFramework\Db\QBMapper<Wopi> */
+class WopiMapper extends \OCP\AppFramework\Db\QBMapper {
+    public function __construct(
+        \OCP\IDBConnection $dbConnection,
+        private readonly string $appName,
+        private readonly ISecureRandom $random,
+        private readonly \OCP\AppFramework\Utility\ITimeFactory $timeFactory,
+        private readonly \OCA\Richdocuments\Config\Application $config,
+        private readonly \Psr\Log\LoggerInterface $logger,
+    ) {
+        parent::__construct($dbConnection, $appName . '_wopi', Wopi::class);
+    }
 
-	/** @var ILogger */
-	private $logger;
+    /**
+     * @param int $fileId
+     * @param string $owner
+     * @param string $editor
+     * @param int $version
+     * @param bool $updatable
+     * @param string $serverHost
+     * @param string $guestDisplayname
+     * @param int $templateDestination
+     * @return Wopi
+     */
+    public function generateFileToken(
+        $fileId, $owner, $editor, $version, $updatable, $serverHost,
+        $guestDisplayname = null, $templateDestination = 0,
+        $hideDownload = false, $direct = false, $templateId = 0, $share = null
+    ) { return $this->insert(Wopi::fromParams([
+        'fileid' => $fileId,
+        'ownerUid' => $owner,
+        'editorUid' => $editor,
+        'version' => $version,
+        'canwrite' => $updatable,
+        'serverHost' => $serverHost,
+        'token' => $this->random->generate(32, \implode('', [
+            ISecureRandom::CHAR_LOWER,
+            ISecureRandom::CHAR_UPPER,
+            ISecureRandom::CHAR_DIGITS
+        ])),
+        'expiry' => $this->calculateNewTokenExpiry(),
+        'guestDisplayname' => $guestDisplayname,
+        'templateDestination' => $templateDestination,
+        'hideDownload' => $hideDownload,
+        'direct' => $direct,
+        'templateId' => $templateId,
+        'remoteServer' => '',
+        'remoteServerToken' => '',
+        'share' => $share,
+        'tokenType' => $guestDisplayname === null ? Wopi::TOKEN_TYPE_USER : Wopi::TOKEN_TYPE_GUEST
+    ])); }
 
-	/** @var ITimeFactory */
-	private $timeFactory;
+    public function generateInitiatorToken($uid, $remoteServer) { return $this->insert(Wopi::fromParams([
+        'fileid' => 0,
+        'editorUid' => $uid,
+        'token' => $this->random->generate(32, \implode('', [
+            ISecureRandom::CHAR_LOWER,
+            ISecureRandom::CHAR_UPPER,
+            ISecureRandom::CHAR_DIGITS
+        ])),
+        'expiry' => $this->calculateNewTokenExpiry(),
+        'remoteServer' => $remoteServer,
+        'tokenType' => Wopi::TOKEN_TYPE_INITIATOR
+    ])); }
 
-	/** @var AppConfig */
-	private $appConfig;
+    /**
+     *
+     * @deprecated
+     * @param $token
+     * @return Wopi
+     * @throws ExpiredTokenException
+     * @throws UnknownTokenException
+     */
+    public function getPathForToken($token) {
+        return $this->getWopiForToken($token);
+    }
 
-	public function __construct(IDBConnection $db,
-		ISecureRandom $random,
-		ILogger $logger,
-		ITimeFactory $timeFactory,
-		AppConfig $appConfig) {
-		parent::__construct($db, 'richdocuments_wopi', Wopi::class);
+    /**
+     * Given a token, validates it and
+     * constructs and validates the path.
+     * Returns the path, if valid, else false.
+     *
+     * @param string $token
+     * @return Wopi
+     * @throws UnknownTokenException
+     * @throws ExpiredTokenException
+     */
+    public function getWopiForToken($token) {
+        $qb = $this->db->getQueryBuilder();
+        $qb->select('*')->from($this->appName . '_wopi')->where(
+            $qb->expr()->eq('token', $qb->createNamedParameter($token))
+        );
+        $result = $qb->execute();
+        $row = $result->fetch();
+        $result->closeCursor();
 
-		$this->random = $random;
-		$this->logger = $logger;
-		$this->timeFactory = $timeFactory;
-		$this->appConfig = $appConfig;
-	}
+        $this->logger->debug('Loaded WOPI Token record: ' . \json_encode($row) . '.');
+        if (false === $row) throw new UnknownTokenException('Could not find token.');
 
-	/**
-	 * @param int $fileId
-	 * @param string $owner
-	 * @param string $editor
-	 * @param int $version
-	 * @param bool $updatable
-	 * @param string $serverHost
-	 * @param string $guestDisplayname
-	 * @param int $templateDestination
-	 * @return Wopi
-	 */
-	public function generateFileToken($fileId, $owner, $editor, $version, $updatable, $serverHost, $guestDisplayname = null, $templateDestination = 0, $hideDownload = false, $direct = false, $templateId = 0, $share = null) {
-		$token = $this->random->generate(32, ISecureRandom::CHAR_LOWER . ISecureRandom::CHAR_UPPER . ISecureRandom::CHAR_DIGITS);
+        $wopi = Wopi::fromRow($row);
 
-		$wopi = Wopi::fromParams([
-			'fileid' => $fileId,
-			'ownerUid' => $owner,
-			'editorUid' => $editor,
-			'version' => $version,
-			'canwrite' => $updatable,
-			'serverHost' => $serverHost,
-			'token' => $token,
-			'expiry' => $this->calculateNewTokenExpiry(),
-			'guestDisplayname' => $guestDisplayname,
-			'templateDestination' => $templateDestination,
-			'hideDownload' => $hideDownload,
-			'direct' => $direct,
-			'templateId' => $templateId,
-			'remoteServer' => '',
-			'remoteServerToken' => '',
-			'share' => $share,
-			'tokenType' => $guestDisplayname === null ? Wopi::TOKEN_TYPE_USER : Wopi::TOKEN_TYPE_GUEST
-		]);
+        if ($wopi->getExpiry() < $this->timeFactory->getTime()) throw new ExpiredTokenException(
+            'Provided token is expired.'
+        );
 
-		/** @var Wopi $wopi */
-		$wopi = $this->insert($wopi);
+        return $wopi;
+    }
 
-		return $wopi;
-	}
+    /**
+     * Calculates the expiry TTL for a newly created token.
+     *
+     * @return int
+     */
+    private function calculateNewTokenExpiry(): int {
+        return $this->timeFactory->getTime() + $this->config->get('token_ttl');
+    }
 
-	public function generateInitiatorToken($uid, $remoteServer) {
-		$token = $this->random->generate(32, ISecureRandom::CHAR_LOWER . ISecureRandom::CHAR_UPPER . ISecureRandom::CHAR_DIGITS);
+    /**
+     * @param int|null $limit
+     * @param int|null $offset
+     * @return int[]
+     * @throws \OCP\DB\Exception
+     */
+    public function getExpiredTokenIds(?int $limit = null, ?int $offset = null): array {
+        $qb = $this->db->getQueryBuilder();
+        $qb->select('id')
+            ->from($this->appName . '_wopi')
+            ->where($qb->expr()->lt('expiry', $qb->createNamedParameter(
+                time() - 60, \OCP\DB\QueryBuilder\IQueryBuilder::PARAM_INT
+            )))
+            ->setFirstResult($offset)
+            ->setMaxResults($limit);
 
-		$wopi = Wopi::fromParams([
-			'fileid' => 0,
-			'editorUid' => $uid,
-			'token' => $token,
-			'expiry' => $this->calculateNewTokenExpiry(),
-			'remoteServer' => $remoteServer,
-			'tokenType' => Wopi::TOKEN_TYPE_INITIATOR
-		]);
-
-		return $this->insert($wopi);
-	}
-
-	/**
-	 *
-	 * @deprecated
-	 * @param $token
-	 * @return Wopi
-	 * @throws ExpiredTokenException
-	 * @throws UnknownTokenException
-	 */
-	public function getPathForToken($token) {
-		return $this->getWopiForToken($token);
-	}
-
-	/**
-	 * Given a token, validates it and
-	 * constructs and validates the path.
-	 * Returns the path, if valid, else false.
-	 *
-	 * @param string $token
-	 * @return Wopi
-	 * @throws UnknownTokenException
-	 * @throws ExpiredTokenException
-	 */
-	public function getWopiForToken($token) {
-		$qb = $this->db->getQueryBuilder();
-		$qb->select('*')
-			->from('richdocuments_wopi')
-			->where(
-				$qb->expr()->eq('token', $qb->createNamedParameter($token))
-			);
-		$result = $qb->execute();
-		$row = $result->fetch();
-		$result->closeCursor();
-
-		$this->logger->debug('Loaded WOPI Token record: {row}.', [
-			'row' => $row,
-			'app' => 'richdocuments'
-		]);
-		if ($row === false) {
-			throw new UnknownTokenException('Could not find token.');
-		}
-
-		/** @var Wopi $wopi */
-		$wopi = Wopi::fromRow($row);
-
-		if ($wopi->getExpiry() < $this->timeFactory->getTime()) {
-			throw new ExpiredTokenException('Provided token is expired.');
-		}
-
-		return $wopi;
-	}
-
-	/**
-	 * Calculates the expiry TTL for a newly created token.
-	 *
-	 * @return int
-	 */
-	private function calculateNewTokenExpiry(): int {
-		return $this->timeFactory->getTime() + (int) $this->appConfig->getAppValue('token_ttl');
-	}
-
-	/**
-	 * @param int|null $limit
-	 * @param int|null $offset
-	 * @return int[]
-	 * @throws \OCP\DB\Exception
-	 */
-	public function getExpiredTokenIds(?int $limit = null, ?int $offset = null): array {
-		$qb = $this->db->getQueryBuilder();
-		$qb->select('id')
-			->from('richdocuments_wopi')
-			->where($qb->expr()->lt('expiry', $qb->createNamedParameter(time() - 60, IQueryBuilder::PARAM_INT)))
-			->setFirstResult($offset)
-			->setMaxResults($limit);
-
-		return array_column($qb->executeQuery()->fetchAll(), 'id');
-	}
+        return \array_column($qb->executeQuery()->fetchAll(), 'id');
+    }
 }

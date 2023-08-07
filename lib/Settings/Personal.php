@@ -21,63 +21,43 @@
  *
  */
 
+declare(strict_types = 1);
+
 namespace OCA\Richdocuments\Settings;
 
-use OCA\Richdocuments\Service\CapabilitiesService;
-use OCA\Richdocuments\Service\InitialStateService;
-use OCP\AppFramework\Http\TemplateResponse;
-use OCP\IConfig;
-use OCP\Settings\ISettings;
+class Personal implements \OCP\Settings\ISettings {
+    public function __construct(
+        private readonly ?string $userId,
+        private readonly string $appName,
+        private readonly \OCA\Richdocuments\Config\User $config,
+        private readonly \OCA\Richdocuments\Service\CapabilitiesService $capabilitiesService,
+        private readonly \OCA\Richdocuments\Service\InitialStateService $initialStateService
 
-class Personal implements ISettings {
-	/** @var IConfig Config */
-	private $config;
+    ) {}
 
-	/** @var CapabilitiesService */
-	private $capabilitiesService;
+    /** @psalm-suppress InvalidNullableReturnType */
+    public function getForm() {
+        if (! (
+            $this->capabilitiesService->hasTemplateSaveAs() ||
+            $this->capabilitiesService->hasTemplateSource()
+        )) return null;
 
-	/** @var InitialStateService */
-	private $initialState;
+        $this->initialStateService->provideCapabilities();
 
-	/** @var string */
-	private $userId;
+        return new \OCP\AppFramework\Http\TemplateResponse($this->appName, 'personal', [
+            'templateFolder' => $this->config->get('templateFolder'),
+            'hasZoteroSupport' => $this->capabilitiesService->hasZoteroSupport(),
+            'zoteroAPIKey' => $this->config->get('zoteroAPIKey')
+        ], 'blank');
+    }
 
-	public function __construct(IConfig $config, CapabilitiesService $capabilitiesService, InitialStateService $initialStateService, $userId) {
-		$this->config = $config;
-		$this->capabilitiesService = $capabilitiesService;
-		$this->initialState = $initialStateService;
-		$this->userId = $userId;
-	}
+    public function getSection() {
+        if (! (
+            $this->capabilitiesService->hasTemplateSaveAs() ||
+            $this->capabilitiesService->hasTemplateSource()
+        )) return null;
+        return $this->appName;
+    }
 
-	/** @psalm-suppress InvalidNullableReturnType */
-	public function getForm() {
-		if (!$this->capabilitiesService->hasTemplateSaveAs() && !$this->capabilitiesService->hasTemplateSource()) {
-			/** @psalm-suppress NullableReturnStatement */
-			return null;
-		}
-
-		$this->initialState->provideCapabilities();
-		return new TemplateResponse(
-			'richdocuments',
-			'personal',
-			[
-				'templateFolder' => $this->config->getUserValue($this->userId, 'richdocuments', 'templateFolder', ''),
-				'hasZoteroSupport' => $this->capabilitiesService->hasZoteroSupport(),
-				'zoteroAPIKey' => $this->config->getUserValue($this->userId, 'richdocuments', 'zoteroAPIKey', '')
-			],
-			'blank'
-		);
-	}
-
-	public function getSection() {
-		if (!$this->capabilitiesService->hasTemplateSaveAs() && !$this->capabilitiesService->hasTemplateSource()) {
-			return null;
-		}
-
-		return 'richdocuments';
-	}
-
-	public function getPriority() {
-		return 0;
-	}
+    public function getPriority() { return 0; }
 }

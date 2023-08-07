@@ -23,87 +23,68 @@
  *
  */
 
-declare(strict_types=1);
+declare(strict_types = 1);
 
 namespace OCA\Richdocuments\Middleware;
 
-use OCA\Richdocuments\AppInfo\Application;
-use OCA\Richdocuments\Controller\WopiController;
-use OCA\Richdocuments\Db\WopiMapper;
-use OCA\Richdocuments\Helper;
-use OCP\AppFramework\Http;
-use OCP\AppFramework\Http\JSONResponse;
-use OCP\AppFramework\Http\Response;
-use OCP\AppFramework\Middleware;
-use OCP\Files\NotPermittedException;
-use OCP\IConfig;
-use OCP\IRequest;
-use Psr\Log\LoggerInterface;
-use Symfony\Component\HttpFoundation\IpUtils;
+use \OCP\Files\NotPermittedException;
+use \OCP\AppFramework\Http;
+use \OCA\Richdocuments\Controller\WopiController;
 
-class WOPIMiddleware extends Middleware {
-	/** @var IConfig */
-	private $config;
-	/** @var IRequest */
-	private $request;
-	/** @var WopiMapper */
-	private $wopiMapper;
-	/** @var LoggerInterface */
-	private $logger;
+class WOPIMiddleware extends \OCP\AppFramework\Middleware {
+    public function __construct(
+        private readonly \OCP\IRequest $request,
+        private readonly \OCA\Richdocuments\Db\WopiMapper $wopiMapper,
+        private readonly \OCA\Richdocuments\Config\Application $config,
+        private readonly \Psr\Log\LoggerInterface $logger
+    ) {}
 
-	public function __construct(IConfig $config, IRequest $request, WopiMapper $wopiMapper, LoggerInterface $logger) {
-		$this->config = $config;
-		$this->request = $request;
-		$this->wopiMapper = $wopiMapper;
-		$this->logger = $logger;
-	}
+    public function beforeController($controller, $methodName) {
+        parent::beforeController($controller, $methodName);
 
-	public function beforeController($controller, $methodName) {
-		parent::beforeController($controller, $methodName);
+        if (! ($controller instanceof WopiController)) return;
+        if (! $this->isWOPIAllowed()) throw new NotPermittedException();
 
-		if ($controller instanceof WopiController && !$this->isWOPIAllowed()) {
-			throw new NotPermittedException();
-		}
+        try {
+            [$fileId, ,] = \OCA\Richdocuments\Helper::parseFileId(
+                $this->request->getParam('fileId')
+            );
+            $fileId = (int)$fileId;
+            $wopi = $this->wopiMapper->getWopiForToken(
+                $this->request->getParam('access_token')
+            );
+            if (! (
+                ($fileId === $wopi->getFileid()) || ($fileId === $wopi->getTemplateId())
+            )) throw new NotPermittedException();
+        }
 
-		if (!$controller instanceof WopiController) {
-			return;
-		}
+        catch (\Throwable $e) {
+            $this->logger->error('Failed to validate WOPI access', [ 'exception' => $e ]);
+            throw new NotPermittedException();
+        }
+    }
 
-		try {
-			$fileId = $this->request->getParam('fileId');
-			$accessToken = $this->request->getParam('access_token');
-			[$fileId, ,] = Helper::parseFileId($fileId);
-			$wopi = $this->wopiMapper->getWopiForToken($accessToken);
-			if ((int)$fileId !== $wopi->getFileid() && (int)$fileId !== $wopi->getTemplateId()) {
-				throw new NotPermittedException();
-			}
-		} catch (\Exception $e) {
-			$this->logger->error('Failed to validate WOPI access', [ 'exception' => $e ]);
-			throw new NotPermittedException();
-		}
-	}
+    public function afterException($controller, $methodName, \Exception $exception): Http\Response {
+        if (! ($controller instanceof WopiController)) throw $exception;
+        if (! ($exception instanceof NotPermittedException)) throw $exception;
+        return new Http\JSONResponse([], Http::STATUS_FORBIDDEN);
+    }
 
-	public function afterException($controller, $methodName, \Exception $exception): Response {
-		if ($exception instanceof NotPermittedException && $controller instanceof WopiController) {
-			return new JSONResponse([], Http::STATUS_FORBIDDEN);
-		}
+    public function isWOPIAllowed(): bool {
+        $allowed = $this->config->get('wopi_allowlist');
+        if (empty($allowed)) return true;
 
-		throw $exception;
-	}
+        $address = $this->request->getRemoteAddress();
+        if (\Symfony\Component\HttpFoundation\IpUtils::checkIp(
+            $address, $allowed
+        )) return true;
 
-	public function isWOPIAllowed(): bool {
-		$allowedRanges = $this->config->getAppValue(Application::APPNAME, 'wopi_allowlist');
-		if ($allowedRanges === '') {
-			return true;
-		}
-		$allowedRanges = preg_split('/(\s|,|;|\|)+/', $allowedRanges);
+        $this->logger->info(\implode(' ', [
+            'WOPI request denied from', $address,
+            'as it does not match the configured ranges:',
+            implode(', ', $allowed)
+        ]));
 
-		$userIp = $this->request->getRemoteAddress();
-		if (IpUtils::checkIp($userIp, $allowedRanges)) {
-			return true;
-		}
-
-		$this->logger->info('WOPI request denied from ' . $userIp . ' as it does not match the configured ranges: ' . implode(', ', $allowedRanges));
-		return false;
-	}
+        return false;
+    }
 }

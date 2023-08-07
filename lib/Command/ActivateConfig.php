@@ -21,65 +21,50 @@
  *
  */
 
+declare(strict_types = 1);
 
 namespace OCA\Richdocuments\Command;
 
-use OCA\Richdocuments\AppConfig;
-use OCA\Richdocuments\Service\CapabilitiesService;
-use OCA\Richdocuments\WOPI\DiscoveryManager;
-use OCA\Richdocuments\WOPI\Parser;
-use Symfony\Component\Console\Command\Command;
-use Symfony\Component\Console\Input\InputInterface;
-use Symfony\Component\Console\Output\OutputInterface;
+class ActivateConfig extends \Symfony\Component\Console\Command\Command {
+    public function __construct(
+        private readonly string $appName,
+        private readonly \OCA\Richdocuments\WOPI\Parser $wopiParser,
+        private readonly \OCA\Richdocuments\WOPI\DiscoveryManager $discoveryManager,
+        private readonly \OCA\Richdocuments\Config\Application $config,
+        private readonly \OCA\Richdocuments\Service\CapabilitiesService $capabilitiesService
+    ) {
+        parent::__construct();
+    }
 
-class ActivateConfig extends Command {
-	/** @var AppConfig */
-	private $appConfig;
+    protected function configure() {
+        $this->setName($this->appName . ':activate-config');
+        $this->setDescription('Activate config changes');
+    }
 
-	/** @var CapabilitiesService */
-	private $capabilitiesService;
+    protected function execute(
+        \Symfony\Component\Console\Input\InputInterface $input,
+        \Symfony\Component\Console\Output\OutputInterface $output
+    ) {
+        try {
+            if (\in_array(
+                'public_wopi_url', $this->config->keys(), true
+            )) $this->config->remove('public_wopi_url');
 
-	/** @var DiscoveryManager  */
-	private $discoveryManager;
+            $this->discoveryManager->clear();
+            $this->capabilitiesService->clear();
+            $this->wopiParser->getUrlSrc('Capabilities');
+            $this->capabilitiesService->clear();
+            $this->capabilitiesService->refetch();
+            $output->writeln('<info>Activated any config changes</info>');
+            return 0;
+        }
 
-	/** @var Parser */
-	private $wopiParser;
+        catch (\Exception $exception) {
+            $output->writeln('<error>Failed to activate any config changes</error>');
+            $output->writeln($exception->getMessage());
+            $output->writeln($exception->getTraceAsString());
+        }
 
-	public function __construct(AppConfig $appConfig, CapabilitiesService $capabilitiesService, DiscoveryManager $discoveryManager, Parser $wopiParser) {
-		parent::__construct();
-
-		$this->appConfig = $appConfig;
-		$this->capabilitiesService = $capabilitiesService;
-		$this->discoveryManager = $discoveryManager;
-		$this->wopiParser = $wopiParser;
-	}
-
-	protected function configure() {
-		$this
-			->setName('richdocuments:activate-config')
-			->setDescription('Activate config changes');
-	}
-
-	protected function execute(InputInterface $input, OutputInterface $output) {
-		try {
-			$this->discoveryManager->refetch();
-			$this->capabilitiesService->clear();
-			$capaUrlSrc = $this->wopiParser->getUrlSrc('Capabilities');
-			if (is_array($capaUrlSrc) && $capaUrlSrc['action'] === 'getinfo') {
-				$public_wopi_url = str_replace('/hosting/capabilities', '', $capaUrlSrc['urlsrc']);
-				if ($public_wopi_url !== null) {
-					$this->appConfig->setAppValue('public_wopi_url', $public_wopi_url);
-				}
-			}
-			$this->capabilitiesService->clear();
-			$this->capabilitiesService->refetch();
-			$output->writeln('<info>Activated any config changes</info>');
-			return 0;
-		} catch (\Exception $e) {
-			$output->writeln('<error>Failed to activate any config changes</error>');
-			$output->writeln($e->getMessage());
-			$output->writeln($e->getTraceAsString());
-			return 1;
-		}
-	}
+        return 1;
+    }
 }

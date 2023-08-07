@@ -21,137 +21,112 @@
  *
  */
 
+declare(strict_types = 1);
+
 namespace OCA\Richdocuments\Service;
 
-use OCA\Richdocuments\AppInfo\Application;
-use OCP\App\IAppManager;
-use OCP\Http\Client\IClientService;
-use OCP\ICache;
-use OCP\ICacheFactory;
-use OCP\IConfig;
-use OCP\IL10N;
-use Psr\Log\LoggerInterface;
-
 class CapabilitiesService {
-	/** @var IConfig */
-	private $config;
-	/** @var IClientService */
-	private $clientService;
-	/** @var ICache */
-	private $cache;
-	/** @var IAppManager */
-	private $appManager;
-	/** @var IL10N */
-	private $l10n;
-	/** @var LoggerInterface */
-	private $logger;
+    private readonly \OCP\ICache $cache;
+    private ?array $capabilities = null;
 
-	/** @var array */
-	private $capabilities;
+    public function __construct(
+        string $appName,
+        \OCP\ICacheFactory $cacheFactory,
+        private readonly \OCP\IL10N $l10n,
+        private readonly \OCP\Http\Client\IClientService $clientService,
+        private readonly \OCA\Richdocuments\WOPI\EndpointResolver $endpointResolver,
+        private readonly \OCA\Richdocuments\Config\Application $config,
+        private readonly \OCA\Richdocuments\Service\CodeService $codeService,
+        private readonly \Psr\Log\LoggerInterface $logger
+    ) {
+        $this->cache = $cacheFactory->createDistributed($appName);
+    }
 
+    public function getCapabilities() {
+        if ($this->config->get('code')) {
+            $capabilities = $this->cache->get('capabilities');
+            if (! \is_null($capabilities)) $this->cache->remove('capabilities');
+            $this->capabilities = $this->codeService->capabilities();
+        }
 
-	public function __construct(IConfig $config, IClientService $clientService, ICacheFactory $cacheFactory, IAppManager $appManager, IL10N $l10n, LoggerInterface $logger) {
-		$this->config = $config;
-		$this->clientService = $clientService;
-		$this->cache = $cacheFactory->createDistributed('richdocuments');
-		$this->appManager = $appManager;
-		$this->l10n = $l10n;
-		$this->logger = $logger;
-	}
+        else {
+            if (\is_null($this->capabilities)) $this->capabilities = $this->cache->get('capabilities');
+            if (\is_null($this->capabilities) || empty($this->capabilities)) { $this->refetch(); }
+        }
 
-	public function getCapabilities() {
-		if (!$this->capabilities) {
-			$this->capabilities = $this->cache->get('capabilities');
-		}
+        return \is_array($this->capabilities) ? $this->capabilities : [];
+    }
 
-		$isARM64 = php_uname('m') === 'aarch64';
-		$CODEAppID = $isARM64 ? 'richdocumentscode_arm64' : 'richdocumentscode';
-		$isCODEInstalled = $this->appManager->isEnabledForUser($CODEAppID);
-		$isCODEEnabled = strpos($this->config->getAppValue('richdocuments', 'wopi_url'), 'proxy.php?req=') !== false;
-		$shouldRecheckCODECapabilities = $isCODEInstalled && $isCODEEnabled && ($this->capabilities === null || count($this->capabilities) === 0);
-		if ($this->capabilities === null || $shouldRecheckCODECapabilities) {
-			$this->refetch();
-		}
+    public function hasNextcloudBranding(): bool {
+        $productVersion = $this->getCapabilities()['productVersion'] ?? '0.0.0.0';
+        return version_compare($productVersion, '21.11', '>=');
+    }
 
-		if (!is_array($this->capabilities)) {
-			return [];
-		}
+    public function hasDrawSupport(): bool {
+        $productVersion = $this->getCapabilities()['productVersion'] ?? '0.0.0.0';
+        return version_compare($productVersion, '6.4.7', '>=');
+    }
 
-		return $this->capabilities;
-	}
+    public function hasTemplateSaveAs(): bool {
+        return $this->getCapabilities()['hasTemplateSaveAs'] ?? false;
+    }
 
-	public function hasNextcloudBranding(): bool {
-		$productVersion = $this->getCapabilities()['productVersion'] ?? '0.0.0.0';
-		return version_compare($productVersion, '21.11', '>=');
-	}
+    public function hasTemplateSource(): bool {
+        return $this->getCapabilities()['hasTemplateSource'] ?? false;
+    }
 
-	public function hasDrawSupport(): bool {
-		$productVersion = $this->getCapabilities()['productVersion'] ?? '0.0.0.0';
-		return version_compare($productVersion, '6.4.7', '>=');
-	}
+    public function hasZoteroSupport(): bool {
+        return $this->getCapabilities()['hasZoteroSupport'] ?? false;
+    }
 
-	public function hasTemplateSaveAs(): bool {
-		return $this->getCapabilities()['hasTemplateSaveAs'] ?? false;
-	}
+    public function getProductName(): string {
+        $theme = $this->config->get('theme', ['default' => 'nextcloud']);
 
-	public function hasTemplateSource(): bool {
-		return $this->getCapabilities()['hasTemplateSource'] ?? false;
-	}
+        $capabilitites = $this->getCapabilities();
 
-	public function hasZoteroSupport(): bool {
-		return $this->getCapabilities()['hasZoteroSupport'] ?? false;
-	}
+        if (isset(
+            $capabilitites['productName']
+        ) && ('nextcloud' !== $theme)) return $capabilitites['productName'];
 
-	public function getProductName(): string {
-		$theme = $this->config->getAppValue(Application::APPNAME, 'theme', 'nextcloud');
+        return $this->l10n->t('Nextcloud Office');
+    }
 
-		if (isset($this->capabilitites['productName']) && $theme !== 'nextcloud') {
-			return $this->capabilitites['productName'];
-		}
+    public function clear(): void {
+        $this->cache->remove('capabilities');
+    }
 
-		return $this->l10n->t('Nextcloud Office');
-	}
+    public function refetch(): void {
+        if ($this->config->get('code')) return;
+        $url = $this->endpointResolver->internal();
+        if (! \is_string($url)) return;
 
-	public function clear(): void {
-		$this->cache->remove('capabilities');
-	}
+        $url = rtrim($url, '/') . '/hosting/capabilities';
 
-	public function refetch(): void {
-		$remoteHost = $this->config->getAppValue('richdocuments', 'wopi_url');
-		if ($remoteHost === '') {
-			return;
-		}
-		$capabilitiesEndpoint = rtrim($remoteHost, '/') . '/hosting/capabilities';
+        $client = $this->clientService->newClient();
+        $options = ['timeout' => 45, 'nextcloud' => ['allow_local_address' => true]];
 
-		$client = $this->clientService->newClient();
-		$options = ['timeout' => 45, 'nextcloud' => ['allow_local_address' => true]];
+        if ($this->config->get('disable_certificate_verification')) $options['verify'] = false;
 
-		if ($this->config->getAppValue('richdocuments', 'disable_certificate_verification') === 'yes') {
-			$options['verify'] = false;
-		}
+        $capabilities = null;
 
-		try {
-			$startTime = microtime(true);
-			$response = $client->get($capabilitiesEndpoint, $options);
-			$duration = round(((microtime(true) - $startTime)), 3);
-			$this->logger->info('Fetched capabilities endpoint from ' . $capabilitiesEndpoint. ' in ' . $duration . ' seconds');
-			$responseBody = $response->getBody();
-			$capabilities = \json_decode($responseBody, true);
+        try {
+            $startTime = microtime(true);
+            $response = $client->get($url, $options);
+            $duration = round(((microtime(true) - $startTime)), 3);
+            $this->logger->info('Fetched capabilities endpoint from ' . $url. ' in ' . $duration . ' seconds');
+            $responseBody = $response->getBody();
+            $capabilities = \json_decode($responseBody, true);
+        } catch (\Exception $e) { $this->logger->error(
+            'Failed to fetch the Collabora capabilities endpoint: ' . $e->getMessage(),
+            [ 'exception' => $e ]
+        ); }
 
-			if (!is_array($capabilities)) {
-				$capabilities = [];
-			}
-		} catch (\Exception $e) {
-			$this->logger->error('Failed to fetch the Collabora capabilities endpoint: ' . $e->getMessage(), [ 'exception' => $e ]);
-			$capabilities = [];
-		}
+        if (! \is_array($capabilities)) $capabilities = [];
 
-		$this->capabilities = $capabilities;
-		$ttl = 3600;
-		if (count($capabilities) === 0) {
-			$ttl = 60;
-		}
-
-		$this->cache->set('capabilities', $capabilities, $ttl);
-	}
+        $this->cache->set(
+            'capabilities',
+            $this->capabilities = $capabilities,
+            empty($capabilities) ? 60 : 3600
+        );
+    }
 }

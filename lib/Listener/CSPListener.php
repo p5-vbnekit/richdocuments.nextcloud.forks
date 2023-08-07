@@ -1,6 +1,4 @@
 <?php
-
-declare(strict_types=1);
 /**
  * @copyright Copyright (c) 2022 Julius Härtl <jus@bitgrid.net>
  *
@@ -22,109 +20,119 @@ declare(strict_types=1);
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
  */
+
+declare(strict_types = 1);
+
 namespace OCA\Richdocuments\Listener;
 
-use OCA\Richdocuments\AppConfig;
-use OCA\Richdocuments\Service\FederationService;
-use OCP\App\IAppManager;
-use OCP\AppFramework\Http\EmptyContentSecurityPolicy;
-use OCP\EventDispatcher\Event;
-use OCP\EventDispatcher\IEventListener;
-use OCP\GlobalScale\IConfig as GlobalScaleConfig;
-use OCP\IRequest;
-use OCP\Security\CSP\AddContentSecurityPolicyEvent;
+use \OCA\Richdocuments\Utils;
 
-/** @template-implements IEventListener<Event|AddContentSecurityPolicyEvent> */
-class CSPListener implements IEventListener {
-	private IRequest $request;
-	private AppConfig $config;
-	private IAppManager $appManager;
-	private FederationService $federationService;
-	private GlobalScaleConfig $globalScaleConfig;
+/** @template-implements \OCP\EventDispatcher\IEventListener<\OCP\EventDispatcher\Event|\OCP\Security\CSP\AddContentSecurityPolicyEvent> */
+class CSPListener implements \OCP\EventDispatcher\IEventListener {
+    public function __construct(
+        private readonly \OCP\IRequest $request,
+        private readonly \OCP\App\IAppManager $appManager,
+        private readonly \OCA\Richdocuments\WOPI\EndpointResolver $endpointResolver,
+        private readonly \OCA\Richdocuments\Config\Collector $config,
+        private readonly \OCA\Richdocuments\Service\FederationService $federationService
+    ) {}
 
-	public function __construct(IRequest $request, AppConfig $config, IAppManager $appManager, FederationService $federationService, GlobalScaleConfig $globalScaleConfig) {
-		$this->request = $request;
-		$this->config = $config;
-		$this->appManager = $appManager;
-		$this->federationService = $federationService;
-		$this->globalScaleConfig = $globalScaleConfig;
-	}
+    public function handle(\OCP\EventDispatcher\Event $event): void {
+        if (! ($event instanceof \OCP\Security\CSP\AddContentSecurityPolicyEvent)) return;
+        if (! $this->isPageLoad()) return;
 
-	public function handle(Event $event): void {
-		if (!$event instanceof AddContentSecurityPolicyEvent) {
-			return;
-		}
+        $urls = \iterator_to_array((function () {
+            $wopi = $this->endpointResolver->external();
+            if (\is_string($wopi)) yield $wopi;
+            yield from \array_filter($this->getFederationDomains());
+            yield from \array_filter($this->getGSDomains());
+        }) (), false);
 
-		if (!$this->isPageLoad()) {
-			return;
-		}
+        $policy = new \OCP\AppFramework\Http\EmptyContentSecurityPolicy();
+        $policy->addAllowedFrameDomain("'self'");
+        $policy->addAllowedFrameDomain("nc:");
 
-		$urls = array_merge(
-			[ $this->domainOnly($this->config->getCollaboraUrlPublic()) ],
-			$this->getFederationDomains(),
-			$this->getGSDomains()
-		);
+        foreach ($urls as $url) {
+            $policy->addAllowedFrameDomain($url);
+            $policy->addAllowedFormActionDomain($url);
+            $policy->addAllowedFrameAncestorDomain($url);
+            $policy->addAllowedImageDomain($url);
+        }
 
-		$urls = array_filter($urls);
+        $event->addPolicy($policy);
+    }
 
-		$policy = new EmptyContentSecurityPolicy();
-		$policy->addAllowedFrameDomain("'self'");
-		$policy->addAllowedFrameDomain("nc:");
+    private function isPageLoad(): bool {
+        $path = $this->request->getScriptName();
+        if (! \is_string($path)) return false;
+        return ('index.php' === $path) || \str_ends_with($path, '/index.php');
+    }
 
-		foreach ($urls as $url) {
-			$policy->addAllowedFrameDomain($url);
-			$policy->addAllowedFormActionDomain($url);
-			$policy->addAllowedFrameAncestorDomain($url);
-			$policy->addAllowedImageDomain($url);
-		}
+    private function getFederationDomains(): array {
+        if (! $this->appManager->isEnabledForUser('federation')) return [];
 
-		$event->addPolicy($policy);
-	}
+        $trustedNextcloudDomains = \array_filter(
+            $this->federationService->getTrustedServers(),
+            fn ($server) => \is_string($server) && ('' !== $server) && $this->federationService->isTrustedRemote($server)
+        );
 
-	private function isPageLoad(): bool {
-		$scriptNameParts = explode('/', $this->request->getScriptName());
-		return end($scriptNameParts) === 'index.php';
-	}
+        $trustedCollaboraDomains = \iterator_to_array((function () use ($trustedNextcloudDomains) {
+            foreach ($trustedNextcloudDomains as $server) {
+                Utils\Common::assert(\is_string($server));
+                Utils\Common::assert('' !== $server);
+                try {
+                    $server = $this->federationService->getRemoteCollaboraURL($server);
+                    Utils\Common::assert(\is_string($server));
+                    Utils\Common::assert('' !== $server);
+                }
+                catch (\Throwable $e) {
+                    // If there is no remote collabora server we can just skip that
+                    unset($e);
+                    continue;
+                }
+                yield $server;
+            }
+        }) ());
 
-	private function getFederationDomains(): array {
-		if (!$this->appManager->isEnabledForUser('federation')) {
-			return [];
-		}
+        return \array_map(
+            fn ($url) => $this->domainOnly($url),
+            \array_merge($trustedNextcloudDomains, $trustedCollaboraDomains)
+        );
+    }
 
-		$trustedNextcloudDomains = array_filter(array_map(function ($server) {
-			return $this->federationService->isTrustedRemote($server) ? $server : null;
-		}, $this->federationService->getTrustedServers()));
+    private function getGSDomains(): array {
+        if (! $this->config->global_scale->isGlobalScaleEnabled()) return [];
+        return $this->config->system->get('gs.trustedHosts');
+    }
 
-		$trustedCollaboraDomains = array_filter(array_map(function ($server) {
-			try {
-				return $this->federationService->getRemoteCollaboraURL($server);
-			} catch (\Exception $e) {
-				// If there is no remote collabora server we can just skip that
-				return null;
-			}
-		}, $trustedNextcloudDomains));
+    /**
+     * Strips the path and query parameters from the URL.
+     */
+    private function domainOnly(string $url): string {
+        Utils\Common::assert('' !== $url);
 
-		return array_map(function ($url) {
-			return $this->domainOnly($url);
-		}, array_merge($trustedNextcloudDomains, $trustedCollaboraDomains));
-	}
+        $url = \parse_url($url);
+        Utils\Common::assert(\is_array($url));
 
-	private function getGSDomains(): array {
-		if (!$this->globalScaleConfig->isGlobalScaleEnabled()) {
-			return [];
-		}
+        if (\array_key_exists('scheme', $url)) {
+            $scheme = $url['scheme'];
+            Utils\Common::assert(\is_string($scheme));
+            if ('' !== $scheme) $scheme = '://' . $scheme;
+        } else $scheme = '';
 
-		return $this->config->getGlobalScaleTrustedHosts();
-	}
+        Utils\Common::assert(\array_key_exists('host', $url));
+        $host = $url['host'];
+        Utils\Common::assert(\is_string($host));
+        Utils\Common::assert('' !== $host);
 
-	/**
-	 * Strips the path and query parameters from the URL.
-	 */
-	private function domainOnly(string $url): string {
-		$parsedUrl = parse_url($url);
-		$scheme = isset($parsedUrl['scheme']) ? $parsedUrl['scheme'] . '://' : '';
-		$host = $parsedUrl['host'] ?? '';
-		$port = isset($parsedUrl['port']) ? ':' . $parsedUrl['port'] : '';
-		return "$scheme$host$port";
-	}
+        if (\array_key_exists('port', $url)) {
+            $port = $url['port'];
+            Utils\Common::assert(\is_integer($port));
+            Utils\Common::assert(0 < $port);
+            Utils\Common::assert(65536 > $port);
+            $port = ':' . $port;
+        } else $port = '';
+
+        return $scheme . $host . $port;
+    }
 }

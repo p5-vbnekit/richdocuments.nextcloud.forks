@@ -21,93 +21,70 @@
  *
  */
 
+declare(strict_types = 1);
+
 namespace OCA\Richdocuments\Settings;
 
-use OCA\Richdocuments\AppConfig;
-use OCA\Richdocuments\Service\CapabilitiesService;
-use OCA\Richdocuments\Service\DemoService;
-use OCA\Richdocuments\Service\FontService;
-use OCA\Richdocuments\Service\InitialStateService;
-use OCA\Richdocuments\TemplateManager;
-use OCP\AppFramework\Http\TemplateResponse;
-use OCP\IConfig;
-use OCP\Settings\ISettings;
+class Admin implements \OCP\Settings\ISettings {
+    public function __construct(
+        private readonly string $appName,
+        private readonly \OCA\Richdocuments\TemplateManager $manager,
+        private readonly \OCA\Richdocuments\Config\Collector $config,
+        private readonly \OCA\Richdocuments\Service\DemoService $demoService,
+        private readonly \OCA\Richdocuments\Service\FontService $fontService,
+        private readonly \OCA\Richdocuments\Service\InitialStateService $initialStateService,
+        private readonly \OCA\Richdocuments\Service\CapabilitiesService $capabilitiesService
+    ) {}
 
-class Admin implements ISettings {
-	/** @var IConfig */
-	private $config;
+    public function getForm() {
+        $this->initialStateService->provideCapabilities();
 
-	/** @var AppConfig */
-	private $appConfig;
+        $_payload = [
+            'code' => $this->config->application->get('code'),
+            'wopi_url' => $this->config->application->get('wopi_url'),
+            'wopi_allowlist' => \implode(', ', $this->config->application->get('wopi_allowlist')),
+            'edit_groups' => \implode('|', $this->config->application->get('edit_groups')),
+            'use_groups' => \implode('|', $this->config->application->get('use_groups')),
+            'doc_format' => $this->config->application->get('doc_format'),
+            'external_apps' => \implode(',', $this->config->application->get('external_apps')),
+            'canonical_webroot' => $this->config->application->get('canonical_webroot'),
+            'disable_certificate_verification' => $this->config->application->get('disable_certificate_verification')
+        ];
 
-	/** @var TemplateManager */
-	private $manager;
+        $_payload = ['settings' => [
+            ...$_payload,
+            'templates' => $this->manager->getSystemFormatted(),
+            'templatesAvailable' => $this->capabilitiesService->hasTemplateSaveAs() || $this->capabilitiesService->hasTemplateSource(),
+            'settings' => \iterator_to_array((function () use ($_payload) {
+                yield from $_payload;
+                foreach (\iterator_to_array((function () use ($_payload) {
+                    yield from \array_filter(
+                        $this->config->application->keys(),
+                        fn (string $key) => (! \array_key_exists($key, $_payload))
+                    );
+                    yield from \array_filter(
+                        $this->config->application->keys('files'),
+                        fn (string $key) => (
+                            \str_starts_with($key, 'watermark_') && (! \array_key_exists($key, $_payload))
+                        )
+                    );
+                }) (), true) as $_key) {
+                    yield $_key => $this->config->application->get($_key);
+                }
+            }) (), true),
+            'demo_servers' => $this->demoService->fetchDemoServers(),
+            'web_server' => \strtolower($_SERVER['SERVER_SOFTWARE']),
+            'os_family' => \PHP_VERSION_ID >= 70200 ? \PHP_OS_FAMILY : \PHP_OS,
+            'platform' => \php_uname('m'),
+            'fonts' => $this->fontService->getFontFileNames()
+        ]];
 
-	/** @var CapabilitiesService */
-	private $capabilitiesService;
+        return new \OCP\AppFramework\Http\TemplateResponse(
+            $this->appName, 'admin', $_payload, 'blank'
+        );
+    }
 
-	/** @var DemoService */
-	private $demoService;
+    public function getSection() { return $this->appName; }
 
-	/** @var InitialStateService */
-	private $initialState;
-	/**
-	 * @var FontService
-	 */
-	private $fontService;
-
-	public function __construct(
-		IConfig             $config,
-		AppConfig           $appConfig,
-		TemplateManager     $manager,
-		CapabilitiesService $capabilitiesService,
-		DemoService         $demoService,
-		FontService 		$fontService,
-		InitialStateService $initialStateService
-	) {
-		$this->config = $config;
-		$this->appConfig = $appConfig;
-		$this->manager = $manager;
-		$this->capabilitiesService = $capabilitiesService;
-		$this->demoService = $demoService;
-		$this->initialState = $initialStateService;
-		$this->fontService = $fontService;
-	}
-
-	public function getForm() {
-		$this->initialState->provideCapabilities();
-		return new TemplateResponse(
-			'richdocuments',
-			'admin',
-			[
-				'settings' => [
-					'wopi_url' => $this->config->getAppValue('richdocuments', 'wopi_url'),
-					'wopi_allowlist' => $this->config->getAppValue('richdocuments', 'wopi_allowlist'),
-					'edit_groups' => $this->config->getAppValue('richdocuments', 'edit_groups'),
-					'use_groups' => $this->config->getAppValue('richdocuments', 'use_groups'),
-					'doc_format' => $this->config->getAppValue('richdocuments', 'doc_format'),
-					'external_apps' => $this->config->getAppValue('richdocuments', 'external_apps'),
-					'canonical_webroot' => $this->config->getAppValue('richdocuments', 'canonical_webroot'),
-					'disable_certificate_verification' => $this->config->getAppValue('richdocuments', 'disable_certificate_verification', '') === 'yes',
-					'templates' => $this->manager->getSystemFormatted(),
-					'templatesAvailable' => $this->capabilitiesService->hasTemplateSaveAs() || $this->capabilitiesService->hasTemplateSource(),
-					'settings' => $this->appConfig->getAppSettings(),
-					'demo_servers' => $this->demoService->fetchDemoServers(),
-					'web_server' => strtolower($_SERVER['SERVER_SOFTWARE']),
-					'os_family' => PHP_VERSION_ID >= 70200 ? PHP_OS_FAMILY : PHP_OS,
-					'platform' => php_uname('m'),
-					'fonts' => $this->fontService->getFontFileNames(),
-				],
-			],
-			'blank'
-		);
-	}
-
-	public function getSection() {
-		return 'richdocuments';
-	}
-
-	public function getPriority() {
-		return 0;
-	}
+    public function getPriority() { return 0; }
 }

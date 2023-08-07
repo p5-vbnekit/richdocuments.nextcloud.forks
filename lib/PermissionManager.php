@@ -1,6 +1,4 @@
 <?php
-
-declare(strict_types=1);
 /**
  * @copyright Copyright (c) 2017 Lukas Reschke <lukas@statuscode.ch>
  *
@@ -21,176 +19,121 @@ declare(strict_types=1);
  *
  */
 
+declare(strict_types = 1);
+
 namespace OCA\Richdocuments;
 
-use OCP\Constants;
-use OCP\Files\Node;
-use OCP\IConfig;
-use OCP\IGroupManager;
-use OCP\IUserManager;
-use OCP\IUserSession;
-use OCP\Share\IAttributes;
-use OCP\Share\IShare;
-use OCP\SystemTag\ISystemTagObjectMapper;
+use \OCP\Share\IShare;
+use \OCP\Share\IAttributes;
 
 class PermissionManager {
-	private AppConfig $appConfig;
-	private IConfig $config;
-	private IGroupManager $groupManager;
-	private IUserManager $userManager;
-	private IUserSession $userSession;
-	private ISystemTagObjectMapper $systemTagObjectMapper;
+    public function __construct(
+        private readonly \OCP\IUserManager $userManager,
+        private readonly \OCP\IUserSession $userSession,
+        private readonly \OCP\IGroupManager $groupManager,
+        private readonly \OCP\SystemTag\ISystemTagObjectMapper $systemTagObjectMapper,
+        private readonly Config\Collector $config
+    ) {}
 
-	public function __construct(
-		AppConfig              $appConfig,
-		IConfig                $config,
-		IGroupManager          $groupManager,
-		IUserManager           $userManager,
-		IUserSession           $userSession,
-		ISystemTagObjectMapper $systemTagObjectMapper
-	) {
-		$this->appConfig = $appConfig;
-		$this->config = $config;
-		$this->groupManager = $groupManager;
-		$this->userManager = $userManager;
-		$this->userSession = $userSession;
-		$this->systemTagObjectMapper = $systemTagObjectMapper;
-	}
+    private function userMatchesGroupList(?string $userId = null, ?array $groupList = []): bool {
+        if (\is_null($userId)) {
+            // Share links set the incognito mode so in order to still get the
+            // user information we need to temporarily switch it off to get the current user
+            $incognito = \OC_User::isIncognitoMode();
+            if ($incognito) \OC_User::setIncognitoMode(false);
+            try {
+                $user = $this->userSession->getUser();
+                $userId = \is_null($user) ? null : $user->getUID();
+            }
+            finally { if ($incognito) \OC_User::setIncognitoMode(true); }
+        }
 
-	private function userMatchesGroupList(?string $userId = null, ?array $groupList = []): bool {
-		if ($userId === null) {
-			// Share links set the incognito mode so in order to still get the
-			// user information we need to temporarily switch it off to get the current user
-			$incognito = false;
-			if (\OC_User::isIncognitoMode()) {
-				\OC_User::setIncognitoMode(false);
-				$incognito = true;
-			}
-			$user = $this->userSession->getUser();
-			$userId = $user ? $user->getUID() : null;
-			if ($incognito) {
-				\OC_User::setIncognitoMode(true);
-			}
-		}
+        // Access for public users will be checked separately based on the share owner
+        // when generating the WOPI  token and loading the scripts on public share links
+        if (\is_null($userId)) return false;
 
-		if ($userId === null) {
-			// Access for public users will be checked separately based on the share owner
-			// when generating the WOPI  token and loading the scripts on public share links
-			return false;
-		}
+        if (\is_null($groupList) || empty($groupList)) return true;
 
-		if ($groupList === null || $groupList === []) {
-			return true;
-		}
+        if ($this->groupManager->isAdmin($userId)) return true;
 
-		if ($this->groupManager->isAdmin($userId)) {
-			return true;
-		}
+        $userGroups = $this->groupManager->getUserGroupIds($this->userManager->get($userId));
 
-		$userGroups = $this->groupManager->getUserGroupIds($this->userManager->get($userId));
+        foreach ($groupList as $group) if (\in_array($group, $userGroups)) return true;
 
-		foreach ($groupList as $group) {
-			if (in_array($group, $userGroups)) {
-				return true;
-			}
-		}
+        return false;
+    }
 
-		return false;
-	}
+    public function isEnabledForUser(?string $userId = null): bool {
+        return $this->userMatchesGroupList(
+            $userId, $this->config->application->get('use_groups')
+        );
+    }
 
-	public function isEnabledForUser(string $userId = null): bool {
-		if ($this->userMatchesGroupList($userId, $this->appConfig->getUseGroups())) {
-			return true;
-		}
+    public function userCanEdit(?string $userId = null): bool {
+        return $this->userMatchesGroupList(
+            $userId, $this->config->application->get('edit_groups')
+        );
+    }
 
-		return false;
-	}
+    public function userIsFeatureLocked(?string $userId = null): bool {
+        if (! $this->config->application->get('read_only_feature_lock')) return false;
+        return ! $this->userCanEdit($userId);
+    }
 
-	public function userCanEdit(string $userId = null): bool {
-		if ($this->userMatchesGroupList($userId, $this->appConfig->getEditGroups())) {
-			return true;
-		}
+    public function shouldWatermark(
+        \OCP\Files\Node $node,
+        ?string $userId = null,
+        ?IShare $share = null
+    ): bool {
+        if (! $this->config->application->get('watermark_enabled')) return false;
 
-		return false;
-	}
+        $fileId = $node->getId();
 
-	public function userIsFeatureLocked(string $userId = null): bool {
-		if ($this->appConfig->isReadOnlyFeatureLocked() && !$this->userCanEdit($userId)) {
-			return true;
-		}
+        $isUpdatable = $node->isUpdateable() && (\is_null($share) || (\OCP\Constants::PERMISSION_UPDATE & $share->getPermissions()));
 
-		return false;
-	}
+        $hasShareAttributes = (! \is_null($share)) && \method_exists($share, 'getAttributes') && ($share->getAttributes() instanceof IAttributes);
+        $isDisabledDownload = $hasShareAttributes && (false === $share->getAttributes()->getAttribute('permissions', 'download'));
+        $isHideDownload = (! \is_null($share)) && $share->getHideDownload();
+        $isSecureView = $isDisabledDownload || $isHideDownload;
+        if ((! \is_null($share)) && (IShare::TYPE_LINK === $share->getShareType())) {
+            if ($this->config->application->get('watermark_linkAll')) return true;
+            if ((! $isUpdatable) && $this->config->application->get('watermark_linkRead')) return true;
+            if ($isSecureView && $this->config->application->get('watermark_linkSecure')) return true;
+            if ($this->config->application->get('watermark_linkTags')) {
+                $tags = $this->config->application->get('watermark_linkTagsList');
+                foreach (\array_map('strval', $this->systemTagObjectMapper->getTagIdsForObjects(
+                    [$fileId], 'files'
+                )[$fileId]) as $tagId) if (\in_array($tagId, $tags, true)) return true;
+            }
+        }
 
-	public function shouldWatermark(Node $node, ?string $userId = null, ?IShare $share = null): bool {
-		if ($this->config->getAppValue(AppConfig::WATERMARK_APP_NAMESPACE, 'watermark_enabled', 'no') === 'no') {
-			return false;
-		}
+        if ($this->config->application->get(
+            'watermark_shareAll'
+        ) && ($userId !== $node->getOwner()->getUID())) return true;
 
-		$fileId = $node->getId();
+        if ((! $isUpdatable) && $this->config->application->get(
+            'watermark_shareRead'
+        )) return true;
 
-		$isUpdatable = $node->isUpdateable() && (!$share || $share->getPermissions() & Constants::PERMISSION_UPDATE);
+        if ($isDisabledDownload && $this->config->application->get(
+            'watermark_shareDisabledDownload'
+        )) return true;
 
-		$hasShareAttributes = $share && method_exists($share, 'getAttributes') && $share->getAttributes() instanceof IAttributes;
-		$isDisabledDownload = $hasShareAttributes && $share->getAttributes()->getAttribute('permissions', 'download') === false;
-		$isHideDownload = $share && $share->getHideDownload();
-		$isSecureView = $isDisabledDownload || $isHideDownload;
-		if ($share && $share->getShareType() === IShare::TYPE_LINK) {
-			if ($this->config->getAppValue(AppConfig::WATERMARK_APP_NAMESPACE, 'watermark_linkAll', 'no') === 'yes') {
-				return true;
-			}
-			if ($this->config->getAppValue(AppConfig::WATERMARK_APP_NAMESPACE, 'watermark_linkRead', 'no') === 'yes' && !$isUpdatable) {
-				return true;
-			}
-			if ($this->config->getAppValue(AppConfig::WATERMARK_APP_NAMESPACE, 'watermark_linkSecure', 'no') === 'yes' && $isSecureView) {
-				return true;
-			}
+        if ((! \is_null($userId)) && $this->config->application->get(
+            'watermark_allGroups'
+        )) foreach ($this->config->application->get(
+            'watermark_allGroupsList'
+        ) as $group) if ($this->groupManager->isInGroup(
+            $userId, $group
+        )) return true;
 
-			if ($this->config->getAppValue(AppConfig::WATERMARK_APP_NAMESPACE, 'watermark_linkTags', 'no') === 'yes') {
-				$tags = $this->appConfig->getAppValueArray('watermark_linkTagsList');
-				$fileTags = $this->systemTagObjectMapper->getTagIdsForObjects([$fileId], 'files')[$fileId];
-				$fileTags = array_map('strval', $fileTags);
-				foreach ($fileTags as $tagId) {
-					if (in_array($tagId, $tags, true)) {
-						return true;
-					}
-				}
-			}
-		}
+        if ($this->config->application->get('watermark_allTags')) {
+            $tags = $this->config->application->get('watermark_allTagsList');
+            foreach (\array_map('strval', $this->systemTagObjectMapper->getTagIdsForObjects(
+                [$fileId], 'files'
+            )[$fileId]) as $tagId) if (\in_array($tagId, $tags, true)) return true;
+        }
 
-		if ($this->config->getAppValue(AppConfig::WATERMARK_APP_NAMESPACE, 'watermark_shareAll', 'no') === 'yes') {
-			if ($node->getOwner()->getUID() !== $userId) {
-				return true;
-			}
-		}
-
-		if ($this->config->getAppValue(AppConfig::WATERMARK_APP_NAMESPACE, 'watermark_shareRead', 'no') === 'yes' && !$isUpdatable) {
-			return true;
-		}
-
-		if ($this->config->getAppValue(AppConfig::WATERMARK_APP_NAMESPACE, 'watermark_shareDisabledDownload', 'no') === 'yes' && $isDisabledDownload) {
-			return true;
-		}
-
-		if ($userId !== null && $this->config->getAppValue(AppConfig::WATERMARK_APP_NAMESPACE, 'watermark_allGroups', 'no') === 'yes') {
-			$groups = $this->appConfig->getAppValueArray('watermark_allGroupsList');
-			foreach ($groups as $group) {
-				if ($this->groupManager->isInGroup($userId, $group)) {
-					return true;
-				}
-			}
-		}
-		if ($this->config->getAppValue(AppConfig::WATERMARK_APP_NAMESPACE, 'watermark_allTags', 'no') === 'yes') {
-			$tags = $this->appConfig->getAppValueArray('watermark_allTagsList');
-			$fileTags = $this->systemTagObjectMapper->getTagIdsForObjects([$fileId], 'files')[$fileId];
-			$fileTags = array_map('strval', $fileTags);
-			foreach ($fileTags as $tagId) {
-				if (in_array($tagId, $tags, true)) {
-					return true;
-				}
-			}
-		}
-
-		return false;
-	}
+        return false;
+    }
 }

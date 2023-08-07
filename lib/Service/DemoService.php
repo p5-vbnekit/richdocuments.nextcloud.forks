@@ -21,40 +21,60 @@
  *
  */
 
+declare(strict_types = 1);
+
 namespace OCA\Richdocuments\Service;
 
-use OCP\Http\Client\IClientService;
-use OCP\ICache;
+use \OCA\Richdocuments\Utils;
 
 class DemoService {
-	/**
-	 * @var ICache
-	 */
-	private $cache;
-	/**
-	 * @var IClientService
-	 */
-	private $clientService;
+    private readonly \OCP\ICache $cache;
 
-	public function __construct(ICache $cache, IClientService $clientService) {
-		$this->cache = $cache;
-		$this->clientService = $clientService;
-	}
+    public function __construct(
+        \OCP\ICacheFactory $cacheFactory,
+        private readonly string $appName,
+        private readonly \OCP\Http\Client\IClientService $clientService,
+        private readonly \Psr\Log\LoggerInterface $logger
+    ) {
+        $this->cache = $cacheFactory->createDistributed($appName);
+    }
 
-	public function fetchDemoServers($refresh = false) {
-		$servers = $this->cache->get('richdocuments-demo');
-		if (!$refresh) {
-			return json_decode($servers, true);
-		}
-		$demoServerList = 'https://col.la/nextclouddemoservers';
-		$client = $this->clientService->newClient();
-		try {
-			$response = $client->get($demoServerList);
-			$servers = json_decode($response->getBody(), true)['servers'] ?? [];
-		} catch (\Exception $e) {
-			$servers = [];
-		}
-		$this->cache->set('richdocuments-demo', json_encode($servers));
-		return $servers;
-	}
+    public function fetchDemoServers(bool $refresh = false): array {
+        $cacheKey = $this->appName . '-demo';
+
+        if ($refresh) {
+            static $url = 'https://col.la/nextclouddemoservers';
+
+            try {
+                $servers = $this->clientService->newClient()->get($url)->getBody();
+                Utils\Common::assert(\is_string($servers));
+                Utils\Common::assert('' !== $servers);
+                $servers = \json_decode($servers, true);
+                Utils\Common::assert(\is_array($servers));
+                Utils\Common::assert(\array_key_exists('servers', $servers));
+                $servers = $servers['servers'];
+                Utils\Common::assert(! empty($servers));
+            }
+
+            catch (\Exception $exception) {
+                $servers = [];
+                $this->logger->warning(\implode(' ', [
+                    'failed to fetch',
+                    'demoservers from', $url
+                ]), ['exception' => $exception]);
+            }
+
+            $this->cache->set($cacheKey, \json_encode($servers));
+        }
+
+        else {
+            $servers = $this->cache->get($cacheKey);
+            if (\is_string($servers) && ('' !== $servers)) {
+                $servers = \json_decode($servers, true);
+                if (! \is_array($servers)) $servers = [];
+            } else $servers = [];
+        }
+
+        return $servers;
+    }
 }

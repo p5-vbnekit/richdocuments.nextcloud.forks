@@ -21,43 +21,28 @@
  *
  */
 
+declare(strict_types = 1);
+
 namespace OCA\Richdocuments\Settings;
 
-use OCA\Richdocuments\Service\CapabilitiesService;
-use OCP\IL10N;
-use OCP\IURLGenerator;
-use OCP\Settings\IIconSection;
+class Section implements \OCP\Settings\IIconSection {
+    public function __construct(
+        private readonly string $appName,
+        private readonly \OCP\IL10N $l10n,
+        private readonly \OCP\IURLGenerator $urlGenerator,
+        private readonly \OCA\Richdocuments\Service\CapabilitiesService $capabilitiesService
+    ) {}
 
-class Section implements IIconSection {
-	/** @var IURLGenerator */
-	private $url;
-	/** @var CapabilitiesService */
-	private $capabilitites;
-	/** @var IL10N */
-	private $l10n;
+    public function getID() { return $this->appName; }
 
-	public function __construct(IURLGenerator $url, CapabilitiesService $capabilities, IL10N $l10n) {
-		$this->url = $url;
-		$this->capabilitites = $capabilities;
-		$this->l10n = $l10n;
-	}
+    public function getName() {
+        if ($this->capabilitiesService->hasNextcloudBranding()) return $this->l10n->t('Office');
+        return $this->capabilitiesService->getProductName();
+    }
 
-	public function getID() {
-		return 'richdocuments';
-	}
+    public function getPriority() { return 75; }
 
-	public function getName() {
-		if ($this->capabilitites->hasNextcloudBranding()) {
-			return $this->l10n->t('Office');
-		}
-		return $this->capabilitites->getProductName();
-	}
-
-	public function getPriority() {
-		return 75;
-	}
-
-	public function getIcon() {
-		return $this->url->imagePath('richdocuments', 'app-dark.svg');
-	}
+    public function getIcon() { return $this->urlGenerator->imagePath(
+        $this->appName, 'app-dark.svg'
+    ); }
 }

@@ -22,7 +22,6 @@ class ComposerStaticInitRichdocuments
 
     public static $classMap = array (
         'Composer\\InstalledVersions' => __DIR__ . '/..' . '/composer/InstalledVersions.php',
-        'OCA\\Richdocuments\\AppConfig' => __DIR__ . '/..' . '/../lib/AppConfig.php',
         'OCA\\Richdocuments\\AppInfo\\Application' => __DIR__ . '/..' . '/../lib/AppInfo/Application.php',
         'OCA\\Richdocuments\\Backgroundjobs\\Cleanup' => __DIR__ . '/..' . '/../lib/Backgroundjobs/Cleanup.php',
         'OCA\\Richdocuments\\Backgroundjobs\\ObtainCapabilities' => __DIR__ . '/..' . '/../lib/Backgroundjobs/ObtainCapabilities.php',

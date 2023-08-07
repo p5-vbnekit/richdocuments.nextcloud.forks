@@ -7,7 +7,6 @@ $baseDir = $vendorDir;
 
 return array(
     'Composer\\InstalledVersions' => $vendorDir . '/composer/InstalledVersions.php',
-    'OCA\\Richdocuments\\AppConfig' => $baseDir . '/../lib/AppConfig.php',
     'OCA\\Richdocuments\\AppInfo\\Application' => $baseDir . '/../lib/AppInfo/Application.php',
     'OCA\\Richdocuments\\Backgroundjobs\\Cleanup' => $baseDir . '/../lib/Backgroundjobs/Cleanup.php',
     'OCA\\Richdocuments\\Backgroundjobs\\ObtainCapabilities' => $baseDir . '/../lib/Backgroundjobs/ObtainCapabilities.php',

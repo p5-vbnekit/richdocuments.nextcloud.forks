@@ -1,7 +1,4 @@
 <?php
-
-declare(strict_types=1);
-
 /**
  * @copyright Copyright (c) 2019 Julius Härtl <jus@bitgrid.net>
  *
@@ -24,222 +21,266 @@ declare(strict_types=1);
  *
  */
 
+declare(strict_types = 1);
+
 namespace OCA\Richdocuments\Service;
 
-use OCA\Federation\TrustedServers;
-use OCA\Files_Sharing\External\Storage as SharingExternalStorage;
-use OCA\Richdocuments\AppConfig;
-use OCA\Richdocuments\Db\Direct;
-use OCA\Richdocuments\Db\Wopi;
-use OCA\Richdocuments\TokenManager;
-use OCP\AutoloadNotAllowedException;
-use OCP\Files\File;
-use OCP\Files\InvalidPathException;
-use OCP\Files\NotFoundException;
-use OCP\Http\Client\IClientService;
-use OCP\ICache;
-use OCP\ICacheFactory;
-use OCP\ILogger;
-use OCP\IRequest;
-use OCP\IURLGenerator;
-use OCP\Share\IShare;
-use Psr\Container\ContainerExceptionInterface;
-use Psr\Container\NotFoundExceptionInterface;
+use \OCP\AutoloadNotAllowedException;
+use \OCP\Files\NotFoundException;
+
+use \OCA\Federation\TrustedServers;
+use \OCA\Richdocuments\Db;
+use \OCA\Richdocuments\Utils;
+use \OCA\Files_Sharing\External\Storage as SharingExternalStorage;
+
+use \Psr\Container\ContainerExceptionInterface;
+use \Psr\Container\NotFoundExceptionInterface;
 
 class FederationService {
-	/** @var ICache */
-	private $cache;
-	/** @var IClientService */
-	private $clientService;
-	/** @var ILogger  */
-	private $logger;
-	/** @var TrustedServers */
-	private $trustedServers;
-	/** @var AppConfig */
-	private $appConfig;
-	/** @var TokenManager */
-	private $tokenManager;
-	/** @var IRequest */
-	private $request;
-	/** @var IURLGenerator */
-	private $urlGenerator;
+    private readonly \OCP\ICache $cache;
+    private readonly ?TrustedServers $trustedServers;
 
-	public function __construct(ICacheFactory $cacheFactory, IClientService $clientService, ILogger $logger, TokenManager $tokenManager, AppConfig $appConfig, IRequest $request, IURLGenerator $urlGenerator) {
-		$this->cache = $cacheFactory->createDistributed('richdocuments_remote/');
-		$this->clientService = $clientService;
-		$this->logger = $logger;
-		$this->tokenManager = $tokenManager;
-		$this->appConfig = $appConfig;
-		$this->request = $request;
-		$this->urlGenerator = $urlGenerator;
-		try {
-			$this->trustedServers = \OC::$server->get(\OCA\Federation\TrustedServers::class);
-		} catch (NotFoundExceptionInterface $e) {
-		} catch (ContainerExceptionInterface $e) {
-		} catch (AutoloadNotAllowedException $e) {
-		}
-	}
+    public function __construct(
+        \OCP\ICacheFactory $cacheFactory,
+        private readonly string $appName,
+        private readonly \OCP\IRequest $request,
+        private readonly \OCP\IURLGenerator $urlGenerator,
+        private readonly \OCP\Http\Client\IClientService $clientService,
+        private readonly \OCA\Richdocuments\TokenManager $tokenManager,
+        private readonly \OCA\Richdocuments\Config\Collector $config,
+        private readonly \Psr\Log\LoggerInterface $logger
+    ) {
+        $this->cache = $cacheFactory->createDistributed($appName . '_remote/');
 
-	public function getTrustedServers(): array {
-		if (!$this->trustedServers) {
-			return [];
-		}
+        $this->trustedServers = (static function () use($logger) {
+            $className = TrustedServers::class;
 
-		return array_map(function (array $server) {
-			return $server['url'];
-		}, $this->trustedServers->getServers());
-	}
+            try { return \OC::$server->get($className); }
+            catch (\Throwable $exception) { if (! (
+                    ($exception instanceof NotFoundExceptionInterface) ||
+                    ($exception instanceof ContainerExceptionInterface) ||
+                    ($exception instanceof AutoloadNotAllowedException)
+            )) throw $exception; }
 
-	/**
-	 * @param $remote
-	 * @return string
-	 * @throws \Exception
-	 */
-	public function getRemoteCollaboraURL($remote) {
-		// If no protocol is provided we default to https
-		if (strpos($remote, 'http://') !== 0 && strpos($remote, 'https://') !== 0) {
-			$remote = 'https://' . $remote;
-		}
+            $logger->warning(
+                'failed to resolve ' . $className,
+                ['exception' => $exception]
+            );
 
-		if (!$this->isTrustedRemote($remote)) {
-			throw new \Exception('Unable to determine collabora URL of remote server ' . $remote . ' - Remote is not a trusted server');
-		}
-		$remoteCollabora = $this->cache->get('richdocuments_remote/' . $remote);
-		if ($remoteCollabora !== null) {
-			return $remoteCollabora;
-		}
-		try {
-			$client = $this->clientService->newClient();
-			$response = $client->get($remote . '/ocs/v2.php/apps/richdocuments/api/v1/federation?format=json', ['timeout' => 30]);
-			$data = \json_decode($response->getBody(), true);
-			$remoteCollabora = $data['ocs']['data']['wopi_url'];
-			$this->cache->set('richdocuments_remote/' . $remote, $remoteCollabora, 3600);
-			return $remoteCollabora;
-		} catch (\Throwable $e) {
-			$this->logger->info('Unable to determine collabora URL of remote server ' . $remote, ['exception' => $e]);
-			$this->cache->set('richdocuments_remote/' . $remote, '', 300);
-		}
-		return '';
-	}
+            return null;
+        }) ();
+    }
 
-	public function isTrustedRemote($domainWithPort) {
-		if (strpos($domainWithPort, 'http://') === 0 || strpos($domainWithPort, 'https://') === 0) {
-			$port = parse_url($domainWithPort, PHP_URL_PORT);
-			$domainWithPort = parse_url($domainWithPort, PHP_URL_HOST) . ($port ? ':' . $port : '');
-		}
+    public function getTrustedServers(): array {
+        if (! $this->trustedServers) return [];
+        return \array_map(
+            static fn (array $server) => $server['url'],
+            $this->trustedServers->getServers()
+        );
+    }
 
-		if ($this->appConfig->isTrustedDomainAllowedForFederation() && $this->trustedServers !== null && $this->trustedServers->isTrustedServer($domainWithPort)) {
-			return true;
-		}
+    public function getRemoteCollaboraURL(string $remote): string {
+        try { (static function () use (&$remote) {
+            $remote = \rtrim($remote, '/');
+            Utils\Common::assert('' !== $remote);
+            $parsed = \parse_url($remote);
+            Utils\Common::assert(\is_array($parsed));
+            Utils\Common::assert(\array_key_exists('host', $parsed));
+            Utils\Common::assert(! \array_key_exists('fragment', $parsed));
+            if (\array_key_exists('scheme', $parsed)) Utils\Common::assert(
+                \in_array($parsed['scheme'], ['http', 'https'], true
+            ));
+            else $remote = 'https://' . $remote;
+        }) (); }
 
-		$domain = $this->getDomainWithoutPort($domainWithPort);
+        catch (\Throwable $e) {
+            unset($e);
+            throw new \Exception('Unable to determine collabora URL of remote server');
+        }
 
-		$trustedList = array_merge($this->appConfig->getGlobalScaleTrustedHosts(), [$this->request->getServerHost()]);
-		if (!is_array($trustedList)) {
-			return false;
-		}
+        if (! $this->isTrustedRemote($remote)) throw new \InvalidArgumentException(\implode(' ', [
+            'Unable to determine collabora',
+            'URL of remote server', $remote,
+            '- Remote is not a trusted server'
+        ]));
 
-		foreach ($trustedList as $trusted) {
-			if (!is_string($trusted)) {
-				break;
-			}
-			$regex = '/^' . implode('[-\.a-zA-Z0-9]*', array_map(function ($v) {
-				return preg_quote($v, '/');
-			}, explode('*', $trusted))) . '$/i';
-			if (preg_match($regex, $domain) || preg_match($regex, $domainWithPort)) {
-				return true;
-			}
-		}
+        $cacheKey = $this->appName . '_remote/' . $remote;
+        $result = $this->cache->get($cacheKey);
+        if (! \is_null($result)) return $result;
 
-		return false;
-	}
+        try {
+            $result = $this->clientService->newClient()->get(\implode('', [
+                $remote, '/ocs/v2.php/apps/',
+                $this->appName, '/api/v1/federation?format=json'
+            ]), ['timeout' => 30])->getBody();
+            Utils\Common::assert(\is_string($result));
+            Utils\Common::assert('' !== $result);
+            $result = Utils\Common::get_from_tree(
+                \json_decode($result, true),
+                ['ocs', 'data', 'wopi_url']
+            );
+            Utils\Common::assert(\is_string($result));
+            $result = \rtrim($result, '/');
+            (static function () use ($result) {
+                Utils\Common::assert('' !== $result);
+                $result = \parse_url($result);
+                Utils\Common::assert(\is_array($result));
+                Utils\Common::assert(\array_key_exists('scheme', $result));
+                Utils\Common::assert(\in_array(
+                    $result['scheme'], ['http', 'https'], true
+                ));
+                Utils\Common::assert(\array_key_exists('host', $result));
+                Utils\Common::assert(! \array_key_exists('fragment', $result));
+            }) ();
+            $this->cache->set($cacheKey, $result, 3600);
+            return $result;
+        }
 
-	/**
-	 * Strips a potential port from a domain (in format domain:port)
-	 * @param string $host
-	 * @return string $host without appended port
-	 */
-	private function getDomainWithoutPort($host) {
-		$pos = strrpos($host, ':');
-		if ($pos !== false) {
-			$port = substr($host, $pos + 1);
-			if (is_numeric($port)) {
-				$host = substr($host, 0, $pos);
-			}
-		}
-		return $host;
-	}
+        catch (\Throwable $e) { $this->logger->info(\implode(' ', [
+            'Unable to determine collabora',
+            'URL of remote server', $remote,
+        ])); }
 
-	/** @return Wopi|null */
-	public function getRemoteFileDetails(string $remote, string $remoteToken) {
-		$cacheKey = md5($remote . $remoteToken);
-		$remoteWopi = $this->cache->get($cacheKey);
-		if ($remoteWopi !== null) {
-			return Wopi::fromParams($remoteWopi);
-		}
+        $this->cache->set($cacheKey, '', 300);
+        return '';
+    }
 
-		if (!$this->isTrustedRemote($remote)) {
-			$this->logger->info('COOL-Federation-Source: Unable to determine collabora URL of remote server ' . $remote . ' for token ' . $remoteToken . ' - Remote is not a trusted server');
-			return null;
-		}
+    public function isTrustedRemote(string $domainWithPort): bool {
+        $domainWithPort = (static function () use ($domainWithPort) {
+            $domainWithPort = \rtrim($domainWithPort, '/');
+            if ('' === $domainWithPort) return null;
+            $domainWithPort = \parse_url($domainWithPort);
+            if (! \is_array($domainWithPort)) return null;
+            if (! \array_key_exists('host', $domainWithPort)) return null;
+            if ('' === $domainWithPort['host']) return null;
+            if (\array_key_exists('port', $domainWithPort)) return \implode(
+                ':', [$domainWithPort['host'], $domainWithPort['port']]
+            );
+            return $domainWithPort['host'];
+        });
 
-		try {
-			$this->logger->debug('COOL-Federation-Source: Fetching remote file details from ' . $remote . ' for token ' . $remoteToken);
-			$client = $this->clientService->newClient();
-			$response = $client->post($remote . '/ocs/v2.php/apps/richdocuments/api/v1/federation?format=json', [
-				'timeout' => 30,
-				'body' => [
-					'token' => $remoteToken
-				]
-			]);
-			$responseBody = $response->getBody();
-			$data = \json_decode($responseBody, true, 512);
-			$this->logger->debug('COOL-Federation-Source: Received remote file details for ' . $remoteToken . ' from ' . $remote . ': ' . json_encode($data['ocs']['data']));
-			$this->cache->set($cacheKey, $data['ocs']['data']);
-			return Wopi::fromParams($data['ocs']['data']);
-		} catch (\Throwable $e) {
-			$this->logger->logException($e, ['message' => 'COOL-Federation-Source: Unable to fetch remote file details for ' . $remoteToken . ' from ' . $remote ]);
-		}
-		return null;
-	}
+        if (! \is_string($domainWithPort)) return false;
 
-	/**
-	 * @param File $item
-	 * @return string|null
-	 * @throws NotFoundException
-	 * @throws InvalidPathException
-	 */
-	public function getRemoteRedirectURL(File $item, Direct $direct = null, IShare $share = null) {
-		if (!$item->getStorage()->instanceOfStorage(SharingExternalStorage::class)) {
-			return null;
-		}
+        if ((function () use ($domainWithPort) {
+            if (! $this->config->application->get(
+                'federation_use_trusted_domains'
+            )) return false;
+            if (\is_null($this->trustedServers)) return false;
+            return $this->trustedServers->isTrustedServer($domainWithPort);
+        }) ()) return true;
 
-		$remote = $item->getStorage()->getRemote();
-		$remoteCollabora = $this->getRemoteCollaboraURL($remote);
-		if ($remoteCollabora !== '') {
-			$shareToken = $share ? $share->getToken() : null;
+        $domain = \parse_url($domainWithPort, \PHP_URL_HOST);
 
-			$wopi = $this->tokenManager->newInitiatorToken($remote, $item, $shareToken, ($direct !== null), ($direct ? $direct->getUid() : null));
-			$initiatorServer = $this->urlGenerator->getAbsoluteURL('/');
-			$initiatorToken = $wopi->getToken();
+        foreach (\array_merge(
+            $this->config->system->get('gs.trustedHosts'),
+            [$this->request->getServerHost()]
+        ) as $trusted) {
+            $regex = '/^' . \implode('[-\.a-zA-Z0-9]*', \array_map(
+                static fn (string $v) => \preg_quote($v, '/'),
+                \explode('*', $trusted)
+            )) . '$/i';
+            if (\preg_match($regex, $domain)) return true;
+            if (\preg_match($regex, $domainWithPort)) return true;
+        }
 
-			/**
-			 * If the request to open a file originates from a direct token we might need to fetch the initiator user details when the initiator wopi token is accessed
-			 * as the user might origin on a 3rd instance
-			 */
-			if ($direct && !empty($direct->getInitiatorHost()) && !empty($direct->getInitiatorToken())) {
-				$this->tokenManager->extendWithInitiatorUserToken($wopi, $direct->getInitiatorHost(), $direct->getInitiatorToken());
-			}
+        return false;
+    }
 
-			$url = rtrim($remote, '/') . '/index.php/apps/richdocuments/remote?shareToken=' . $item->getStorage()->getToken() .
-				'&remoteServer=' . $initiatorServer .
-				'&remoteServerToken=' . $initiatorToken;
-			if ($item->getInternalPath() !== '') {
-				$url .= '&filePath=' . $item->getInternalPath();
-			}
-			return $url;
-		}
+    public function getRemoteFileDetails(string $remote, string $remoteToken): ?Db\Wopi {
+        $cacheKey = \md5($remote . $remoteToken);
+        $result = $this->cache->get($cacheKey);
+        if (! \is_null($result)) return Db\Wopi::fromParams($result);
 
-		throw new NotFoundException('Failed to connect to remote collabora instance for ' . $item->getId());
-	}
+        if (! $this->isTrustedRemote($remote)) {
+            $this->logger->info(\implode(' ', [
+                'COOL-Federation-Source: Unable to determine collabora URL of remote server',
+                $remote, 'for token', $remoteToken, '- Remote is not a trusted server'
+            ]));
+            return null;
+        }
+
+        try {
+            $this->logger->debug(\implode(' ', [
+                'COOL-Federation-Source: Fetching remote file details from',
+                $remote, 'for token', $remoteToken
+            ]));
+            $result = $this->clientService->newClient()->post(
+                $remote . '/ocs/v2.php/apps/richdocuments/api/v1/federation?format=json',
+                ['timeout' => 30, 'body' => ['token' => $remoteToken]]
+            )->getBody();
+            Utils\Common::assert(\is_string($result));
+            Utils\Common::assert('' !== $result);
+            $result = Utils\Common::get_from_tree(\json_decode(
+                $result, true, 512
+            ), ['ocs', 'data']);
+            Utils\Common::assert(\is_array($result));
+            Utils\Common::assert(! empty($result));
+            $this->logger->debug(\implode(' ', [
+                'COOL-Federation-Source: Received remote file details for',
+                $remoteToken, 'from', $remote . ':', \json_encode($result)
+            ]));
+        }
+
+        catch (\Throwable $e) {
+            $result = null;
+            $this->logger->warning(\implode(' ', [
+                'COOL-Federation-Source: Unable to fetch remote file details for',
+                $remoteToken, 'from' . $remote
+            ]), ['exception' => $e]);
+        }
+
+        if (\is_null($result)) return null;
+        $this->cache->set($cacheKey, $result);
+        return Db\Wopi::fromParams($result);
+    }
+
+    public function getRemoteRedirectURL(
+        \OCP\Files\File $item,
+        ?Db\Direct $direct = null,
+        ?\OCP\Share\IShare $share = null
+    ): ?string {
+        if (! $item->getStorage()->instanceOfStorage(
+            SharingExternalStorage::class
+        )) return null;
+
+        $remote = $item->getStorage()->getRemote();
+
+        if ('' !== $this->getRemoteCollaboraURL($remote)) {
+            $shareToken = $share ? $share->getToken() : null;
+
+            $wopi = $this->tokenManager->newInitiatorToken(
+                $remote, $item, $shareToken,
+                ! \is_null($direct), $direct ? $direct->getUid() : null
+            );
+            $initiatorServer = $this->urlGenerator->getAbsoluteURL('/');
+            $initiatorToken = $wopi->getToken();
+
+            /**
+             * If the request to open a file originates from a direct token we might need to fetch the initiator user details when the initiator wopi token is accessed
+             * as the user might origin on a 3rd instance
+             */
+            if ($direct && (! (
+                empty($direct->getInitiatorHost()) || empty($direct->getInitiatorToken())
+            ))) $this->tokenManager->extendWithInitiatorUserToken(
+                $wopi, $direct->getInitiatorHost(), $direct->getInitiatorToken()
+            );
+
+            $url = \implode('', [
+                \rtrim($remote, '/'),
+                '/index.php/apps/richdocuments/remote',
+                '?shareToken=' . $item->getStorage()->getToken(),
+                '&remoteServer=' . $initiatorServer,
+                '&remoteServerToken=' . $initiatorToken
+            ]);
+
+            if ('' !== $item->getInternalPath()) $url = $url . '&filePath=' . $item->getInternalPath();
+
+            return $url;
+        }
+
+        throw new NotFoundException(\implode(' ', [
+            'Failed to connect to remote collabora',
+            'instance for', $item->getId()
+        ]));
+    }
 }

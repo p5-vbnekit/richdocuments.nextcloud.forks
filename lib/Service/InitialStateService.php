@@ -21,91 +21,75 @@
  *
  */
 
-declare(strict_types=1);
+declare(strict_types = 1);
 
 namespace OCA\Richdocuments\Service;
 
-use OCA\Richdocuments\AppInfo\Application;
-use OCA\Richdocuments\Db\Wopi;
-use OCP\AppFramework\Services\IInitialState;
-use OCP\IConfig;
-
 class InitialStateService {
-	/** @var IInitialState */
-	private $initialState;
+    private bool $hasProvidedCapabilities = false;
 
-	/** @var CapabilitiesService */
-	private $capabilitiesService;
+    public function __construct(
+        private readonly ?string $userId,
+        private readonly \OCP\IURLGenerator $urlGenerator,
+        private readonly \OCP\AppFramework\Services\IInitialState $initialState,
+        private readonly CapabilitiesService $capabilitiesService,
+        private readonly \OCA\Richdocuments\Config\Collector $config,
+        private readonly \Psr\Log\LoggerInterface $logger
+    ) {}
 
-	/** @var IConfig */
-	private $config;
+    public function provideCapabilities(): void {
+        if ($this->hasProvidedCapabilities) return;
+        $this->initialState->provideInitialState('productName', $this->capabilitiesService->getProductName());
+        $this->initialState->provideInitialState('hasDrawSupport', $this->capabilitiesService->hasDrawSupport());
+        $this->initialState->provideInitialState('hasNextcloudBranding', $this->capabilitiesService->hasNextcloudBranding());
+        $this->hasProvidedCapabilities = true;
+    }
 
-	/** @var string|null */
-	private $userId;
+    public function provideDocument(
+        \OCA\Richdocuments\Db\Wopi $wopi, array $params
+    ): void {
+        $this->provideCapabilities();
 
-	/** @var bool */
-	private $hasProvidedCapabilities = false;
+        $this->initialState->provideInitialState('document', $this->prepareParams($params));
 
-	public function __construct(
-		IInitialState $initialState,
-		CapabilitiesService $capabilitiesService,
-		IConfig $config,
-		$userId
-	) {
-		$this->initialState = $initialState;
-		$this->capabilitiesService = $capabilitiesService;
-		$this->config = $config;
-		$this->userId = $userId;
-	}
+        $this->initialState->provideInitialState('wopi', $wopi);
+        $this->initialState->provideInitialState('theme', $this->config->application->get(
+            'theme', ['default' => 'nextcloud']
+        ));
+        $this->initialState->provideInitialState('uiDefaults', [
+            'UIMode' => $this->config->application->get(
+                'uiDefaults-UIMode', ['default' => 'notebookbar']
+            )
+        ]);
 
-	public function provideCapabilities(): void {
-		if ($this->hasProvidedCapabilities) {
-			return;
-		}
+        $logo = '' !== $this->config->application->get(
+            'logoheaderMime', ['default' => '', 'application' => 'theming']
+        );
+        if (! $logo) $logo = '' !== $this->config->application->get(
+            'logoMime', ['default' => '', 'application' => 'theming']
+        );
+        if ($logo) try { $logo = $this->urlGenerator->getAbsoluteURL(
+            \OC::$server->get(\OCA\Theming\ThemingDefaults::class)->getLogo()
+        ); } catch (\Throwable $exception) { $this->logger->error(
+            'failed to resolve theming logo', ['exception' => $exception]
+        ); }
 
-		$this->initialState->provideInitialState('productName', $this->capabilitiesService->getProductName());
-		$this->initialState->provideInitialState('hasDrawSupport', $this->capabilitiesService->hasDrawSupport());
-		$this->initialState->provideInitialState('hasNextcloudBranding', $this->capabilitiesService->hasNextcloudBranding());
+        $this->initialState->provideInitialState('theming-customLogo', $logo);
+    }
 
-		$this->hasProvidedCapabilities = true;
-	}
-
-	public function provideDocument(Wopi $wopi, array $params): void {
-		$this->provideCapabilities();
-
-		$this->initialState->provideInitialState('document', $this->prepareParams($params));
-
-		$this->initialState->provideInitialState('wopi', $wopi);
-		$this->initialState->provideInitialState('theme', $this->config->getAppValue(Application::APPNAME, 'theme', 'nextcloud'));
-		$this->initialState->provideInitialState('uiDefaults', [
-			'UIMode' => $this->config->getAppValue(Application::APPNAME, 'uiDefaults-UIMode', 'notebookbar')
-		]);
-		$logoSet = $this->config->getAppValue('theming', 'logoheaderMime', '') !== '';
-		if (!$logoSet) {
-			$logoSet = $this->config->getAppValue('theming', 'logoMime', '') !== '';
-		}
-		$this->initialState->provideInitialState('theming-customLogo', ($logoSet ?
-			\OC::$server->getURLGenerator()->getAbsoluteURL(\OC::$server->getThemingDefaults()->getLogo())
-			: false));
-	}
-
-	public function prepareParams(array $params): array {
-		$defaults = [
-			'instanceId' => $this->config->getSystemValue('instanceid'),
-			'canonical_webroot' => $this->config->getAppValue(Application::APPNAME, 'canonical_webroot', ''),
-			'userId' => $this->userId,
-			'token' => '',
-			'token_ttl' => 0,
-			'directEdit' => false,
-			'directGuest' => false,
-			'path' => '',
-			'urlsrc' => '',
-			'fileId' => '',
-			'title' => '',
-			'permissions' => '',
-			'isPublicShare' => false,
-		];
-
-		return array_merge($defaults, $params);
-	}
+    public function prepareParams(array $params): array { return \array_merge([
+        'instanceId' => $this->config->system->get('instanceid'),
+        'canonical_webroot' => $this->config->application->get('canonical_webroot'),
+        'userId' => $this->userId,
+        'token' => '',
+        'token_ttl' => 0,
+        'directEdit' => false,
+        'directGuest' => false,
+        'path' => '',
+        'urlsrc' => '',
+        'fileId' => '',
+        'title' => '',
+        'permissions' => '',
+        'isPublicShare' => false,
+    ], $params); }
 }

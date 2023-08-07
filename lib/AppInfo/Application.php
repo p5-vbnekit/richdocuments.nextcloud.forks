@@ -22,193 +22,166 @@
  *
  */
 
+declare(strict_types = 1);
+
 namespace OCA\Richdocuments\AppInfo;
 
-use OCA\Files_Sharing\Event\ShareLinkAccessedEvent;
-use OCA\Richdocuments\AppConfig;
-use OCA\Richdocuments\Capabilities;
-use OCA\Richdocuments\Listener\BeforeFetchPreviewListener;
-use OCA\Richdocuments\Listener\CSPListener;
-use OCA\Richdocuments\Listener\FileCreatedFromTemplateListener;
-use OCA\Richdocuments\Listener\LoadViewerListener;
-use OCA\Richdocuments\Listener\ReferenceListener;
-use OCA\Richdocuments\Listener\ShareLinkListener;
-use OCA\Richdocuments\Middleware\WOPIMiddleware;
-use OCA\Richdocuments\PermissionManager;
-use OCA\Richdocuments\Preview\MSExcel;
-use OCA\Richdocuments\Preview\MSWord;
-use OCA\Richdocuments\Preview\OOXML;
-use OCA\Richdocuments\Preview\OpenDocument;
-use OCA\Richdocuments\Preview\Pdf;
-use OCA\Richdocuments\Reference\OfficeTargetReferenceProvider;
-use OCA\Richdocuments\Service\CapabilitiesService;
-use OCA\Richdocuments\Template\CollaboraTemplateProvider;
-use OCA\Richdocuments\WOPI\DiscoveryManager;
-use OCA\Viewer\Event\LoadViewer;
-use OCP\AppFramework\App;
-use OCP\AppFramework\Bootstrap\IBootContext;
-use OCP\AppFramework\Bootstrap\IBootstrap;
-use OCP\AppFramework\Bootstrap\IRegistrationContext;
-use OCP\Collaboration\Reference\RenderReferenceEvent;
-use OCP\Files\Template\FileCreatedFromTemplateEvent;
-use OCP\Files\Template\ITemplateManager;
-use OCP\Files\Template\TemplateFileCreator;
-use OCP\IConfig;
-use OCP\IL10N;
-use OCP\IPreview;
-use OCP\Preview\BeforePreviewFetchedEvent;
-use OCP\Security\CSP\AddContentSecurityPolicyEvent;
+use \OCP\Files\Template\TemplateFileCreator;
 
-class Application extends App implements IBootstrap {
-	public const APPNAME = 'richdocuments';
+use \OCA\Richdocuments\WOPI;
+use \OCA\Richdocuments\Service;
 
-	public function __construct(array $urlParams = array()) {
-		parent::__construct(self::APPNAME, $urlParams);
-	}
+class Application extends \OCP\AppFramework\App
+implements \OCP\AppFramework\Bootstrap\IBootstrap {
+    public const APPNAME = 'richdocuments';
 
+    public function __construct(array $urlParams = []) {
+        parent::__construct(self::APPNAME, $urlParams);
+    }
 
-	public function register(IRegistrationContext $context): void {
-		$context->registerTemplateProvider(CollaboraTemplateProvider::class);
-		$context->registerCapability(Capabilities::class);
-		$context->registerMiddleWare(WOPIMiddleware::class);
-		$context->registerEventListener(FileCreatedFromTemplateEvent::class, FileCreatedFromTemplateListener::class);
-		$context->registerEventListener(AddContentSecurityPolicyEvent::class, CSPListener::class);
-		$context->registerEventListener(LoadViewer::class, LoadViewerListener::class);
-		$context->registerEventListener(ShareLinkAccessedEvent::class, ShareLinkListener::class);
-		$context->registerEventListener(BeforePreviewFetchedEvent::class, BeforeFetchPreviewListener::class);
-		$context->registerEventListener(RenderReferenceEvent::class, ReferenceListener::class);
-		$context->registerReferenceProvider(OfficeTargetReferenceProvider::class);
-	}
+    public function register(
+        \OCP\AppFramework\Bootstrap\IRegistrationContext $context
+    ): void {
+        $context->registerTemplateProvider(
+            \OCA\Richdocuments\Template\CollaboraTemplateProvider::class
+        );
 
-	public function boot(IBootContext $context): void {
-		$context->injectFn(function (ITemplateManager $templateManager, IL10N $l10n, IConfig $config, CapabilitiesService $capabilitiesService, PermissionManager $permissionManager) {
-			if (!$permissionManager->isEnabledForUser() || empty($capabilitiesService->getCapabilities())) {
-				return;
-			}
-			$ooxml = $config->getAppValue(self::APPNAME, 'doc_format', '') === 'ooxml';
-			$templateManager->registerTemplateFileCreator(function () use ($l10n, $ooxml) {
-				$odtType = new TemplateFileCreator('richdocuments', $l10n->t('New document'), ($ooxml ? '.docx' : '.odt'));
-				if ($ooxml) {
-					$odtType->addMimetype('application/msword');
-					$odtType->addMimetype('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-				} else {
-					$odtType->addMimetype('application/vnd.oasis.opendocument.text');
-					$odtType->addMimetype('application/vnd.oasis.opendocument.text-template');
-				}
-				$odtType->setIconClass('icon-filetype-document');
-				$odtType->setRatio(21 / 29.7);
-				return $odtType;
-			});
-			$templateManager->registerTemplateFileCreator(function () use ($l10n, $ooxml) {
-				$odsType = new TemplateFileCreator('richdocuments', $l10n->t('New spreadsheet'), ($ooxml ? '.xlsx' : '.ods'));
-				if ($ooxml) {
-					$odsType->addMimetype('application/vnd.ms-excel');
-					$odsType->addMimetype('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-				} else {
-					$odsType->addMimetype('application/vnd.oasis.opendocument.spreadsheet');
-					$odsType->addMimetype('application/vnd.oasis.opendocument.spreadsheet-template');
-				}
-				$odsType->setIconClass('icon-filetype-spreadsheet');
-				$odsType->setRatio(16 / 9);
-				return $odsType;
-			});
-			$templateManager->registerTemplateFileCreator(function () use ($l10n, $ooxml) {
-				$odpType = new TemplateFileCreator('richdocuments', $l10n->t('New presentation'), ($ooxml ? '.pptx' : '.odp'));
-				if ($ooxml) {
-					$odpType->addMimetype('application/vnd.ms-powerpoint');
-					$odpType->addMimetype('application/vnd.openxmlformats-officedocument.presentationml.presentation');
-				} else {
-					$odpType->addMimetype('application/vnd.oasis.opendocument.presentation');
-					$odpType->addMimetype('application/vnd.oasis.opendocument.presentation-template');
-				}
-				$odpType->setIconClass('icon-filetype-presentation');
-				$odpType->setRatio(16 / 9);
-				return $odpType;
-			});
+        $context->registerCapability(\OCA\Richdocuments\Capabilities::class);
 
-			if (!$capabilitiesService->hasDrawSupport()) {
-				return;
-			}
-			$templateManager->registerTemplateFileCreator(function () use ($l10n, $ooxml) {
-				$odpType = new TemplateFileCreator('richdocuments', $l10n->t('New diagram'), '.odg');
-				$odpType->addMimetype('application/vnd.oasis.opendocument.graphics');
-				$odpType->addMimetype('application/vnd.oasis.opendocument.graphics-template');
-				$odpType->setIconClass('icon-filetype-draw');
-				$odpType->setRatio(1);
-				return $odpType;
-			});
-		});
+        $context->registerMiddleWare(\OCA\Richdocuments\Middleware\WOPIMiddleware::class);
 
-		$this->registerProvider();
-		$this->checkAndEnableCODEServer();
-	}
+        $context->registerEventListener(
+            \OCP\Files\Template\FileCreatedFromTemplateEvent::class,
+            \OCA\Richdocuments\Listener\FileCreatedFromTemplateListener::class
+        );
+        $context->registerEventListener(
+            \OCP\Security\CSP\AddContentSecurityPolicyEvent::class,
+            \OCA\Richdocuments\Listener\CSPListener::class
+        );
+        $context->registerEventListener(
+            \OCA\Viewer\Event\LoadViewer::class,
+            \OCA\Richdocuments\Listener\LoadViewerListener::class
+        );
+        $context->registerEventListener(
+            \OCA\Files_Sharing\Event\ShareLinkAccessedEvent::class,
+            \OCA\Richdocuments\Listener\ShareLinkListener::class
+        );
+        $context->registerEventListener(
+            \OCP\Preview\BeforePreviewFetchedEvent::class,
+            \OCA\Richdocuments\Listener\BeforeFetchPreviewListener::class
+        );
+        $context->registerEventListener(
+            \OCP\Collaboration\Reference\RenderReferenceEvent::class,
+            \OCA\Richdocuments\Listener\ReferenceListener::class
+        );
 
-	public function registerProvider() {
-		$container = $this->getContainer();
+        $context->registerReferenceProvider(
+            \OCA\Richdocuments\Reference\OfficeTargetReferenceProvider::class
+        );
+    }
 
-		/** @var IPreview $previewManager */
-		$previewManager = $container->query(IPreview::class);
+    public function boot(
+        \OCP\AppFramework\Bootstrap\IBootContext $context
+    ): void {
+        $context->injectFn(static function (
+            \OCP\IL10N $l10n,
+            \OCP\Files\Template\ITemplateManager $templateManager,
+            \OCA\Richdocuments\PermissionManager $permissionManager,
+            WOPI\DiscoveryManager $discoveryManager,
+            Service\CodeService $codeService,
+            Service\CapabilitiesService $capabilitiesService,
+            \OCA\Richdocuments\Config\Application $config,
+            \Psr\Log\LoggerInterface $logger
+        ) {
+            if ($config->get('code')) {
+                $discoveryManager->clear();
+                $capabilitiesService->clear();
+            }
 
-		$previewManager->registerProvider('/application\/vnd.ms-excel/', function () use ($container) {
-			return $container->query(MSExcel::class);
-		});
+            elseif ((static function () use ($config) {
+                $_url = $config->get('wopi_url');
+                return \is_string($_url) && WOPI\EndpointResolver::seems_like_legacy($_url);
+            }) ()) {
+                $config->remove('wopi_url');
+                $logger->warning('Code service disabled, legacy wopi_url option (proxy.php?req=) was removed from config');
+            }
 
-		$previewManager->registerProvider('/application\/msword/', function () use ($container) {
-			return $container->query(MSWord::class);
-		});
+            if (\in_array(
+                'public_wopi_url', $config->keys(), true
+            )) $config->remove('public_wopi_url');
 
-		$previewManager->registerProvider('/application\/vnd.openxmlformats-officedocument.*/', function () use ($container) {
-			return $container->query(OOXML::class);
-		});
+            try { $codeService->initialize(); } catch (\Throwable $exception) { $logger->error(
+                'failed to initialize ' . \get_class($codeService), ['exception' => $exception]
+            ); }
 
-		$previewManager->registerProvider('/application\/vnd.oasis.opendocument.*/', function () use ($container) {
-			return $container->query(OpenDocument::class);
-		});
+            if ((! $permissionManager->isEnabledForUser()) || empty($capabilitiesService->getCapabilities())) return;
 
-		$previewManager->registerProvider('/application\/pdf/', function () use ($container) {
-			return $container->query(Pdf::class);
-		});
-	}
+            $ooxml = 'ooxml' === $config->get('doc_format');
+            $templateManager->registerTemplateFileCreator(static function () use ($l10n, $ooxml) {
+                $odtType = new TemplateFileCreator(self::APPNAME, $l10n->t('New document'), ($ooxml ? '.docx' : '.odt'));
+                if ($ooxml) {
+                    $odtType->addMimetype('application/msword');
+                    $odtType->addMimetype('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+                } else {
+                    $odtType->addMimetype('application/vnd.oasis.opendocument.text');
+                    $odtType->addMimetype('application/vnd.oasis.opendocument.text-template');
+                }
+                $odtType->setIconClass('icon-filetype-document');
+                $odtType->setRatio(21 / 29.7);
+                return $odtType;
+            });
+            $templateManager->registerTemplateFileCreator(static function () use ($l10n, $ooxml) {
+                $odsType = new TemplateFileCreator(self::APPNAME, $l10n->t('New spreadsheet'), ($ooxml ? '.xlsx' : '.ods'));
+                if ($ooxml) {
+                    $odsType->addMimetype('application/vnd.ms-excel');
+                    $odsType->addMimetype('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+                } else {
+                    $odsType->addMimetype('application/vnd.oasis.opendocument.spreadsheet');
+                    $odsType->addMimetype('application/vnd.oasis.opendocument.spreadsheet-template');
+                }
+                $odsType->setIconClass('icon-filetype-spreadsheet');
+                $odsType->setRatio(16 / 9);
+                return $odsType;
+            });
+            $templateManager->registerTemplateFileCreator(static function () use ($l10n, $ooxml) {
+                $odpType = new TemplateFileCreator(self::APPNAME, $l10n->t('New presentation'), ($ooxml ? '.pptx' : '.odp'));
+                if ($ooxml) {
+                    $odpType->addMimetype('application/vnd.ms-powerpoint');
+                    $odpType->addMimetype('application/vnd.openxmlformats-officedocument.presentationml.presentation');
+                } else {
+                    $odpType->addMimetype('application/vnd.oasis.opendocument.presentation');
+                    $odpType->addMimetype('application/vnd.oasis.opendocument.presentation-template');
+                }
+                $odpType->setIconClass('icon-filetype-presentation');
+                $odpType->setRatio(16 / 9);
+                return $odpType;
+            });
 
-	public function checkAndEnableCODEServer() {
-		// Supported only on Linux OS, and x86_64 & ARM64 platforms
-		$supportedArchs = array('x86_64', 'aarch64');
-		$osFamily = PHP_VERSION_ID >= 70200 ? PHP_OS_FAMILY : PHP_OS;
-		if ($osFamily !== 'Linux' || !in_array(php_uname('m'), $supportedArchs)) {
-			return;
-		}
+            if (! $capabilitiesService->hasDrawSupport()) return;
 
-		$CODEAppID = (php_uname('m') === 'x86_64') ? 'richdocumentscode' : 'richdocumentscode_arm64';
+            $templateManager->registerTemplateFileCreator(static function () use ($l10n, $ooxml) {
+                $odpType = new TemplateFileCreator(self::APPNAME, $l10n->t('New diagram'), '.odg');
+                $odpType->addMimetype('application/vnd.oasis.opendocument.graphics');
+                $odpType->addMimetype('application/vnd.oasis.opendocument.graphics-template');
+                $odpType->setIconClass('icon-filetype-draw');
+                $odpType->setRatio(1);
+                return $odpType;
+            });
+        });
 
-		if ($this->getContainer()->getServer()->getAppManager()->isEnabledForUser($CODEAppID)) {
-			$appConfig = $this->getContainer()->query(AppConfig::class);
-			$wopi_url = $appConfig->getAppValue('wopi_url');
-			$isCODEEnabled = strpos($wopi_url, 'proxy.php?req=') !== false;
+        (function () {
+            $container = $this->getContainer();
+            $previewManager = $container->get(\OCP\IPreview::class);
 
-			// Check if we have the wopi_url set to custom currently
-			if ($wopi_url !== null && $wopi_url !== '' && $isCODEEnabled === false) {
-				return;
-			}
-
-			$urlGenerator = \OC::$server->getURLGenerator();
-			$relativeUrl = $urlGenerator->linkTo($CODEAppID, '') . 'proxy.php';
-			$absoluteUrl = $urlGenerator->getAbsoluteURL($relativeUrl);
-			$new_wopi_url = $absoluteUrl . '?req=';
-
-			// Check if the wopi url needs to be updated
-			if ($isCODEEnabled && $wopi_url === $new_wopi_url) {
-				return;
-			}
-
-			$appConfig->setAppValue('wopi_url', $new_wopi_url);
-			$appConfig->setAppValue('disable_certificate_verification', 'yes');
-
-			$discoveryManager = $this->getContainer()->query(DiscoveryManager::class);
-			$capabilitiesService = $this->getContainer()->query(CapabilitiesService::class);
-
-			$discoveryManager->refetch();
-			$capabilitiesService->clear();
-			$capabilitiesService->refetch();
-		}
-	}
+            foreach ([
+                ['/application\/vnd.ms-excel/', \OCA\Richdocuments\Preview\MSExcel::class],
+                ['/application\/msword/', \OCA\Richdocuments\Preview\MSWord::class],
+                ['/application\/vnd.openxmlformats-officedocument.*/', \OCA\Richdocuments\Preview\OOXML::class],
+                ['/application\/vnd.oasis.opendocument.*/', \OCA\Richdocuments\Preview\OpenDocument::class],
+                ['/application\/pdf/', \OCA\Richdocuments\Preview\Pdf::class]
+            ] as list($mime, $delegate)) $previewManager->registerProvider(
+                $mime, static fn () => $container->get($delegate)
+            );
+        }) ();
+    }
 }
